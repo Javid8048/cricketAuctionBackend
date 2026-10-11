@@ -25,7 +25,7 @@ export class AuctionEngine {
   /**
    * Broadcast an event to all connected clients
    */
-  private broadcast(event: string, data: any) {
+  public broadcast(event: string, data: any) {
     if (this.io) {
       this.io.emit(event, data);
     }
@@ -96,6 +96,17 @@ export class AuctionEngine {
       };
     });
 
+    const players = await this.prisma.player.findMany({
+      include: {
+        teamPlayer: {
+          include: {
+            team: true,
+          },
+        },
+      },
+      orderBy: [{ sNo: 'asc' }, { name: 'asc' }],
+    });
+
     return {
       auction: {
         ...auction,
@@ -105,6 +116,7 @@ export class AuctionEngine {
       highestBidTeam,
       currentBid: auction.activePlayerPrice || (activePlayer ? activePlayer.basePrice : 0),
       teams: formattedTeams,
+      players,
       recentBids: auction.bids,
       minIncrement: auction.activePlayerPrice
         ? getMinBidIncrement(auction.activePlayerPrice)
@@ -180,6 +192,10 @@ export class AuctionEngine {
    */
   public async pauseAuction() {
     this.stopTimer();
+    if (this.autoNextTimeout) {
+      clearTimeout(this.autoNextTimeout);
+      this.autoNextTimeout = null;
+    }
 
     const auction = await this.prisma.auction.findFirst({
       orderBy: { createdAt: 'desc' },
@@ -538,8 +554,9 @@ export class AuctionEngine {
 
   /**
    * Conclude current player as SOLD
+   * Supports manual selling directly to a specified team at a specified price by Admin
    */
-  public async sellPlayer() {
+  public async sellPlayer(manualTeamId?: string, manualPrice?: number) {
     this.stopTimer();
 
     const auction = await this.prisma.auction.findFirst({
@@ -550,20 +567,36 @@ export class AuctionEngine {
       throw new Error('No active player on the auction block.');
     }
 
-    if (!auction.highestBidTeamId || !auction.activePlayerPrice) {
-      // If nobody bid, mark as unsold instead
+    const playerId = auction.activePlayerId;
+    const teamId = manualTeamId || auction.highestBidTeamId;
+
+    if (!teamId) {
+      // If nobody bid and no manual team specified, mark as unsold instead
       return await this.markUnsold();
     }
 
-    const playerId = auction.activePlayerId;
-    const teamId = auction.highestBidTeamId;
-    const winningPrice = auction.activePlayerPrice;
-
     const player = await this.prisma.player.findUnique({ where: { id: playerId } });
-    const team = await this.prisma.team.findUnique({ where: { id: teamId } });
+    const team = await this.prisma.team.findUnique({
+      where: { id: teamId },
+      include: { squad: true },
+    });
 
     if (!player || !team) {
-      throw new Error('Player or winning team not found.');
+      throw new Error('Player or target team not found.');
+    }
+
+    const winningPrice = (manualPrice !== undefined && Number(manualPrice) > 0)
+      ? Number(manualPrice)
+      : (auction.activePlayerPrice || player.basePrice || 100);
+
+    // Validate team purse
+    if (team.remainingPurse < winningPrice) {
+      throw new Error(`Team ${team.name} has insufficient purse (${formatRupees(team.remainingPurse)}) for ${formatRupees(winningPrice)}.`);
+    }
+
+    // Validate squad limit
+    if (team.squad.length >= team.maxSquadSize) {
+      throw new Error(`Team ${team.name} has already reached the maximum squad limit (${team.maxSquadSize} players).`);
     }
 
     // Atomic transaction for purse deduction, squad addition, status update
@@ -608,18 +641,30 @@ export class AuctionEngine {
         },
       });
 
-      // 5. Log event
+      // 5. Update auction active record
+      await tx.auction.update({
+        where: { id: auction.id },
+        data: {
+          highestBidTeamId: teamId,
+          activePlayerPrice: winningPrice,
+        },
+      });
+
+      // 6. Log event
       await tx.auctionEvent.create({
         data: {
           auctionId: auction.id,
           type: 'SOLD',
-          message: `SOLD! ${player.name} sold to ${team.name} for ${formatRupees(winningPrice)}!`,
+          message: manualTeamId
+            ? `SOLD! ${player.name} manually sold to ${team.name} for ${formatRupees(winningPrice)}!`
+            : `SOLD! ${player.name} sold to ${team.name} for ${formatRupees(winningPrice)}!`,
           metadata: JSON.stringify({
             playerId: player.id,
             playerName: player.name,
             teamId: team.id,
             teamName: team.name,
             amount: winningPrice,
+            isManualSale: Boolean(manualTeamId),
           }),
         },
       });
@@ -630,6 +675,7 @@ export class AuctionEngine {
       winningTeam: team,
       finalPrice: winningPrice,
       formattedPrice: formatRupees(winningPrice),
+      isManualSale: Boolean(manualTeamId),
     };
 
     const state = await this.getAuctionState();
@@ -887,6 +933,16 @@ export class AuctionEngine {
 
     if (settings.timerEnabled === false) {
       this.stopTimer();
+      this.broadcast('auction:timer', {
+        secondsLeft: null,
+        timerEnabled: false,
+        message: 'Manual Auction Mode (Timer Disabled)',
+      });
+    } else if (settings.timerEnabled === true) {
+      if (updated.status === 'ACTIVE' && updated.activePlayerId) {
+        this.secondsLeft = updated.defaultTimerSec || 10;
+        this.startTimer();
+      }
     }
 
     const state = await this.getAuctionState();

@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { formatRupees } from '../utils/currency';
+import { auctionEngine } from './auction.controller';
 
 const prisma = new PrismaClient();
 
@@ -130,7 +131,7 @@ export async function createTeam(req: Request, res: Response) {
     // Create User login if credentials were provided
     if (loginUsername && loginPassword) {
       const hashedPassword = await bcrypt.hash(loginPassword, 10);
-      const email = loginUsername.includes('@') ? loginUsername.toLowerCase() : `${loginUsername.toLowerCase()}@franchise.local`;
+      const email = loginUsername.includes('@') ? loginUsername.toLowerCase() : `${loginUsername.toLowerCase()}@team.local`;
 
       // Check if user already exists
       const existingUser = await prisma.user.findFirst({
@@ -210,7 +211,7 @@ export async function updateTeam(req: Request, res: Response) {
 
     if (loginUsername && loginPassword) {
       const hashedPassword = await bcrypt.hash(loginPassword, 10);
-      const email = loginUsername.includes('@') ? loginUsername.toLowerCase() : `${loginUsername.toLowerCase()}@franchise.local`;
+      const email = loginUsername.includes('@') ? loginUsername.toLowerCase() : `${loginUsername.toLowerCase()}@team.local`;
 
       const existingUser = await prisma.user.findFirst({
         where: {
@@ -254,9 +255,65 @@ export async function deleteTeam(req: Request, res: Response) {
   try {
     const { id } = req.params;
 
+    // 1. Find all players in this team's squad and revert them to UPCOMING
+    const squadPlayers = await prisma.teamPlayer.findMany({
+      where: { teamId: id },
+    });
+
+    for (const sp of squadPlayers) {
+      await prisma.player.update({
+        where: { id: sp.playerId },
+        data: {
+          status: 'UPCOMING',
+          currentPrice: null,
+          isIcon: false,
+          iconPrice: null,
+        },
+      });
+    }
+
+    // 2. Delete teamPlayer records
+    await prisma.teamPlayer.deleteMany({
+      where: { teamId: id },
+    });
+
+    // 3. Delete user credentials linked to this team
+    await prisma.user.deleteMany({
+      where: { teamId: id },
+    });
+
+    // 4. Delete bids placed by this team
+    await prisma.bid.deleteMany({
+      where: { teamId: id },
+    });
+
+    // 5. Reset winning team on any AuctionPlayer
+    await prisma.auctionPlayer.updateMany({
+      where: { winningTeamId: id },
+      data: {
+        winningTeamId: null,
+        status: 'PENDING',
+        finalPrice: null,
+      },
+    });
+
+    // 6. Reset active auction highestBidTeamId if it matches
+    await prisma.auction.updateMany({
+      where: { highestBidTeamId: id },
+      data: {
+        highestBidTeamId: null,
+      },
+    });
+
+    // 7. Delete the team itself
     await prisma.team.delete({
       where: { id },
     });
+
+    // 8. Broadcast update to real-time clients
+    try {
+      auctionEngine.broadcast('auction:settings_updated', { deletedTeamId: id });
+    } catch (_) {}
 
     res.json({ message: 'Team deleted successfully.' });
   } catch (error: any) {
@@ -452,7 +509,7 @@ export async function removeIconPlayer(req: Request, res: Response) {
 }
 
 /**
- * Get credentials of all franchises (Admin only)
+ * Get credentials of all teams (Admin only)
  */
 export async function getFranchiseCredentials(req: Request, res: Response) {
   try {
@@ -473,12 +530,12 @@ export async function getFranchiseCredentials(req: Request, res: Response) {
     });
     res.json(teams);
   } catch (error: any) {
-    res.status(500).json({ error: error.message || 'Failed to fetch franchise credentials.' });
+    res.status(500).json({ error: error.message || 'Failed to fetch team credentials.' });
   }
 }
 
 /**
- * Update credentials of a franchise (Admin only)
+ * Update credentials of a team (Admin only)
  */
 export async function updateFranchiseCredentials(req: Request, res: Response) {
   try {
@@ -491,13 +548,13 @@ export async function updateFranchiseCredentials(req: Request, res: Response) {
 
     const team = await prisma.team.findUnique({ where: { id } });
     if (!team) {
-      return res.status(404).json({ error: 'Franchise not found.' });
+      return res.status(404).json({ error: 'Team not found.' });
     }
 
     const hashedPassword = await bcrypt.hash(loginPassword.trim(), 10);
     const email = loginUsername.includes('@')
       ? loginUsername.toLowerCase().trim()
-      : `${loginUsername.toLowerCase().trim()}@franchise.local`;
+      : `${loginUsername.toLowerCase().trim()}@team.local`;
 
     await prisma.team.update({
       where: { id },
@@ -547,3 +604,6 @@ export async function updateFranchiseCredentials(req: Request, res: Response) {
     res.status(500).json({ error: error.message || 'Failed to update credentials.' });
   }
 }
+
+export const getTeamCredentials = getFranchiseCredentials;
+export const updateTeamCredentials = updateFranchiseCredentials;

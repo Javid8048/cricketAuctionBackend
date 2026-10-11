@@ -4,7 +4,7 @@ import bcrypt from 'bcryptjs';
 const prisma = new PrismaClient();
 
 async function main() {
-  console.log('--- Cleaning database (Removing all franchises and players) ---');
+  console.log('--- Cleaning database (Removing all teams and players) ---');
   await prisma.bid.deleteMany();
   await prisma.teamPlayer.deleteMany();
   await prisma.auctionEvent.deleteMany();
@@ -55,8 +55,8 @@ async function main() {
     },
   });
 
-  console.log(`Initialized clean auction "${auction.name}" (0 Franchises, 0 Players).`);
-  console.log('Admin can now add franchises with custom username/password, and players can register publicly!');
+  console.log(`Initialized clean auction "${auction.name}" (0 Teams, 0 Players).`);
+  console.log('Admin can now add teams with custom username/password, and players can register publicly!');
 }
 
 main()

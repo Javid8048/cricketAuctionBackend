@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
+import { auctionEngine } from './auction.controller';
 
 const prisma = new PrismaClient();
 
@@ -111,6 +112,9 @@ export async function registerPlayerPublic(req: Request, res: Response) {
     const basePrice = Number(data.basePrice) > 0 ? Number(data.basePrice) : 100;
     const age = Number(data.age) || (data.dob ? new Date().getFullYear() - new Date(data.dob).getFullYear() : 22);
 
+    const hasTeam = data.teamId && data.teamId !== 'NONE' && String(data.teamId).trim() !== '';
+    const targetTeamId = hasTeam ? String(data.teamId).trim() : null;
+
     const player = await prisma.player.create({
       data: {
         sNo: sNo,
@@ -136,9 +140,25 @@ export async function registerPlayerPublic(req: Request, res: Response) {
         economy: Number(data.economy || 0),
         bowlingAvg: Number(data.bowlingAvg || 0),
         bestBowling: data.bestBowling || '0/0',
-        status: 'UPCOMING',
+        status: targetTeamId ? 'SOLD' : 'UPCOMING',
+        currentPrice: targetTeamId ? basePrice : null,
       },
     });
+
+    if (targetTeamId) {
+      await prisma.team.update({
+        where: { id: targetTeamId },
+        data: { remainingPurse: { decrement: basePrice } },
+      });
+      await prisma.teamPlayer.create({
+        data: {
+          teamId: targetTeamId,
+          playerId: player.id,
+          price: basePrice,
+          isIcon: Boolean(data.isIcon || data.category === 'Icon Player'),
+        },
+      });
+    }
 
     // Automatically enqueue to the current auction if one exists
     const auction = await prisma.auction.findFirst({
@@ -150,17 +170,39 @@ export async function registerPlayerPublic(req: Request, res: Response) {
         data: {
           auctionId: auction.id,
           playerId: player.id,
-          status: 'PENDING',
+          status: targetTeamId ? 'SOLD' : 'PENDING',
+          winningTeamId: targetTeamId,
+          finalPrice: targetTeamId ? basePrice : null,
           orderIndex: count + 1,
           basePrice: player.basePrice,
         },
       });
     }
 
+    try {
+      const state = await auctionEngine.getAuctionState();
+      if (state) {
+        auctionEngine.broadcast('auction:init', state);
+      }
+    } catch (e) {
+      // non-fatal broadcast error
+    }
+
+    const createdPlayer = await prisma.player.findUnique({
+      where: { id: player.id },
+      include: {
+        teamPlayer: {
+          include: {
+            team: true,
+          },
+        },
+      },
+    });
+
     res.status(201).json({
       success: true,
       message: `Registration successful! Your S.No is #${sNo}`,
-      player,
+      player: createdPlayer || player,
     });
   } catch (error: any) {
     console.error('Public player registration error:', error);
@@ -171,43 +213,67 @@ export async function registerPlayerPublic(req: Request, res: Response) {
 export async function createPlayer(req: Request, res: Response) {
   try {
     const data = req.body;
+    const { teamId, ...playerData } = data;
 
     const lastPlayer = await prisma.player.findFirst({
       orderBy: { sNo: 'desc' },
       select: { sNo: true },
     });
-    const sNo = data.sNo ? Number(data.sNo) : (lastPlayer?.sNo || 0) + 1;
-
-    const basePrice = Number(data.basePrice) > 0 ? Number(data.basePrice) : 100;
+    const sNo = playerData.sNo ? Number(playerData.sNo) : (lastPlayer?.sNo || 0) + 1;
+    const basePrice = Number(playerData.basePrice) > 0 ? Number(playerData.basePrice) : 100;
+    const isAssigned = Boolean(teamId && teamId !== 'NONE' && String(teamId).trim() !== '');
 
     const player = await prisma.player.create({
       data: {
         sNo: sNo,
-        name: data.name,
-        profileImage: data.profileImage || 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400&auto=format&fit=crop&q=80',
-        country: data.country || 'India',
-        isOverseas: data.country ? data.country !== 'India' : false,
-        age: Number(data.age || 24),
-        dob: data.dob || null,
-        place: data.place || null,
-        phone: data.phone || null,
-        role: data.role || 'Batter',
-        battingStyle: data.battingStyle || 'Right-hand bat',
-        bowlingStyle: data.bowlingStyle || 'Right-arm medium',
+        name: playerData.name,
+        profileImage:
+          playerData.profileImage ||
+          'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400&auto=format&fit=crop&q=80',
+        country: playerData.country || 'India',
+        isOverseas: playerData.country ? playerData.country !== 'India' : false,
+        age: Number(playerData.age || 24),
+        dob: playerData.dob || null,
+        place: playerData.place || null,
+        phone: playerData.phone || null,
+        role: playerData.role || 'Batter',
+        battingStyle: playerData.battingStyle || 'Right-hand bat',
+        bowlingStyle: playerData.bowlingStyle || 'Right-arm medium',
         basePrice: basePrice,
-        category: data.category || 'General',
-        matches: Number(data.matches || 0),
-        runs: Number(data.runs || 0),
-        battingAvg: Number(data.battingAvg || 0),
-        strikeRate: Number(data.strikeRate || 0),
-        highestScore: Number(data.highestScore || 0),
-        wickets: Number(data.wickets || 0),
-        economy: Number(data.economy || 0),
-        bowlingAvg: Number(data.bowlingAvg || 0),
-        bestBowling: data.bestBowling || '0/0',
-        status: 'UPCOMING',
+        category: playerData.category || 'General',
+        matches: Number(playerData.matches || 0),
+        runs: Number(playerData.runs || 0),
+        battingAvg: Number(playerData.battingAvg || 0),
+        strikeRate: Number(playerData.strikeRate || 0),
+        highestScore: Number(playerData.highestScore || 0),
+        wickets: Number(playerData.wickets || 0),
+        economy: Number(playerData.economy || 0),
+        bowlingAvg: Number(playerData.bowlingAvg || 0),
+        bestBowling: playerData.bestBowling || '0/0',
+        status: isAssigned ? 'SOLD' : 'UPCOMING',
+        currentPrice: isAssigned ? basePrice : null,
       },
     });
+
+    // If a team is selected on player creation
+    if (isAssigned) {
+      await prisma.teamPlayer.create({
+        data: {
+          teamId: teamId,
+          playerId: player.id,
+          price: basePrice,
+          isIcon: Boolean(playerData.isIcon || playerData.category === 'Icon Player'),
+        },
+      });
+
+      // Deduct team's remaining purse
+      await prisma.team.update({
+        where: { id: teamId },
+        data: {
+          remainingPurse: { decrement: basePrice },
+        },
+      });
+    }
 
     const auction = await prisma.auction.findFirst({
       orderBy: { createdAt: 'desc' },
@@ -218,14 +284,36 @@ export async function createPlayer(req: Request, res: Response) {
         data: {
           auctionId: auction.id,
           playerId: player.id,
-          status: 'PENDING',
+          status: isAssigned ? 'SOLD' : 'PENDING',
           orderIndex: count + 1,
           basePrice: player.basePrice,
+          finalPrice: isAssigned ? basePrice : null,
+          winningTeamId: isAssigned ? teamId : null,
         },
       });
     }
 
-    res.status(201).json(player);
+    const createdPlayer = await prisma.player.findUnique({
+      where: { id: player.id },
+      include: {
+        teamPlayer: {
+          include: {
+            team: true,
+          },
+        },
+      },
+    });
+
+    try {
+      const state = await auctionEngine.getAuctionState();
+      if (state) {
+        auctionEngine.broadcast('auction:init', state);
+      }
+    } catch (e) {
+      // non-fatal broadcast error
+    }
+
+    res.status(201).json(createdPlayer);
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to create player.' });
   }
@@ -234,15 +322,122 @@ export async function createPlayer(req: Request, res: Response) {
 export async function updatePlayer(req: Request, res: Response) {
   try {
     const { id } = req.params;
-    const data = req.body;
+    const {
+      teamId,
+      teamPlayer,
+      bids,
+      auctionPlayers,
+      createdAt,
+      updatedAt,
+      id: _id,
+      ...playerData
+    } = req.body;
+
+    const existingPlayer = await prisma.player.findUnique({
+      where: { id },
+      include: { teamPlayer: true },
+    });
+
+    if (!existingPlayer) {
+      return res.status(404).json({ error: 'Player not found.' });
+    }
+
+    // Handle Team Assignment if teamId was passed in request
+    if (teamId !== undefined) {
+      const currentTeamPlayer = existingPlayer.teamPlayer;
+      const targetTeamId = teamId && teamId !== 'NONE' && String(teamId).trim() !== '' ? String(teamId).trim() : null;
+      const priceToUse = Number(playerData.currentPrice || playerData.basePrice || existingPlayer.basePrice || 100);
+
+      if (targetTeamId) {
+        if (currentTeamPlayer) {
+          if (currentTeamPlayer.teamId !== targetTeamId) {
+            // Refund old team
+            await prisma.team.update({
+              where: { id: currentTeamPlayer.teamId },
+              data: { remainingPurse: { increment: currentTeamPlayer.price } },
+            });
+            // Deduct new team
+            await prisma.team.update({
+              where: { id: targetTeamId },
+              data: { remainingPurse: { decrement: priceToUse } },
+            });
+            // Update teamPlayer row
+            await prisma.teamPlayer.update({
+              where: { id: currentTeamPlayer.id },
+              data: {
+                teamId: targetTeamId,
+                price: priceToUse,
+                isIcon: Boolean(playerData.isIcon || playerData.category === 'Icon Player'),
+              },
+            });
+          }
+        } else {
+          // Newly assigned to a team
+          await prisma.team.update({
+            where: { id: targetTeamId },
+            data: { remainingPurse: { decrement: priceToUse } },
+          });
+          await prisma.teamPlayer.create({
+            data: {
+              teamId: targetTeamId,
+              playerId: id,
+              price: priceToUse,
+              isIcon: Boolean(playerData.isIcon || playerData.category === 'Icon Player'),
+            },
+          });
+        }
+        playerData.status = 'SOLD';
+        playerData.currentPrice = priceToUse;
+      } else {
+        // Unassigned / Removed from team (Free agent)
+        if (currentTeamPlayer) {
+          await prisma.team.update({
+            where: { id: currentTeamPlayer.teamId },
+            data: { remainingPurse: { increment: currentTeamPlayer.price } },
+          });
+          await prisma.teamPlayer.delete({
+            where: { id: currentTeamPlayer.id },
+          });
+        }
+        playerData.status = 'UPCOMING';
+        playerData.currentPrice = null;
+      }
+    }
+
+    if (playerData.country !== undefined) {
+      playerData.isOverseas = playerData.country !== 'India';
+    }
+    if (playerData.basePrice !== undefined) playerData.basePrice = Number(playerData.basePrice);
+    if (playerData.age !== undefined) playerData.age = Number(playerData.age);
+    if (playerData.matches !== undefined) playerData.matches = Number(playerData.matches);
+    if (playerData.runs !== undefined) playerData.runs = Number(playerData.runs);
+    if (playerData.wickets !== undefined) playerData.wickets = Number(playerData.wickets);
+    if (playerData.highestScore !== undefined) playerData.highestScore = Number(playerData.highestScore);
+    if (playerData.battingAvg !== undefined) playerData.battingAvg = Number(playerData.battingAvg);
+    if (playerData.strikeRate !== undefined) playerData.strikeRate = Number(playerData.strikeRate);
+    if (playerData.economy !== undefined) playerData.economy = Number(playerData.economy);
+    if (playerData.bowlingAvg !== undefined) playerData.bowlingAvg = Number(playerData.bowlingAvg);
 
     const player = await prisma.player.update({
       where: { id },
-      data: {
-        ...data,
-        isOverseas: data.country ? data.country !== 'India' : undefined,
+      data: playerData,
+      include: {
+        teamPlayer: {
+          include: {
+            team: true,
+          },
+        },
       },
     });
+
+    try {
+      const state = await auctionEngine.getAuctionState();
+      if (state) {
+        auctionEngine.broadcast('auction:init', state);
+      }
+    } catch (e) {
+      // non-fatal broadcast error
+    }
 
     res.json(player);
   } catch (error: any) {
@@ -257,6 +452,15 @@ export async function deletePlayer(req: Request, res: Response) {
     await prisma.player.delete({
       where: { id },
     });
+
+    try {
+      const state = await auctionEngine.getAuctionState();
+      if (state) {
+        auctionEngine.broadcast('auction:init', state);
+      }
+    } catch (e) {
+      // non-fatal broadcast error
+    }
 
     res.json({ message: 'Player removed successfully.' });
   } catch (error: any) {

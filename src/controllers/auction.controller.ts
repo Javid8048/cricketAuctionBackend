@@ -99,7 +99,8 @@ export async function placeBid(req: AuthenticatedRequest, res: Response) {
 
 export async function sellPlayer(req: AuthenticatedRequest, res: Response) {
   try {
-    const result = await auctionEngine.sellPlayer();
+    const { teamId, price } = req.body || {};
+    const result = await auctionEngine.sellPlayer(teamId, price ? Number(price) : undefined);
     res.json(result);
   } catch (error: any) {
     res.status(400).json({ error: error.message || 'Failed to sell player.' });
@@ -221,7 +222,7 @@ export async function clearAllTournamentData(req: AuthenticatedRequest, res: Res
     await prisma.user.deleteMany({ where: { role: 'TEAM' } });
     await prisma.team.deleteMany();
     await auctionEngine.resetAuction();
-    res.json({ success: true, message: 'All franchises and players cleared successfully.' });
+    res.json({ success: true, message: 'All teams and players cleared successfully.' });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to clear tournament data.' });
   }
