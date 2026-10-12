@@ -57,6 +57,14 @@ export class AuctionEngine {
     if (auction.activePlayerId) {
       activePlayer = await this.prisma.player.findUnique({
         where: { id: auction.activePlayerId },
+        include: {
+          belongingTeam: true,
+          teamPlayer: {
+            include: {
+              team: true,
+            },
+          },
+        },
       });
     }
 
@@ -103,6 +111,7 @@ export class AuctionEngine {
             team: true,
           },
         },
+        belongingTeam: true,
       },
       orderBy: [{ sNo: 'asc' }, { name: 'asc' }],
     });
@@ -298,6 +307,9 @@ export class AuctionEngine {
     });
 
     this.secondsLeft = auction.defaultTimerSec || 10;
+    if (auction.status === 'ACTIVE' && auction.timerEnabled !== false) {
+      this.startTimer();
+    }
     const state = await this.getAuctionState();
     this.broadcast('auction:player', state);
     return state;
@@ -609,11 +621,16 @@ export class AuctionEngine {
         },
       });
 
-      // 2. Add player to squad
-      await tx.teamPlayer.create({
-        data: {
+      // 2. Add or update player in squad (upsert avoids unique constraint failures on re-auction/icon players)
+      await tx.teamPlayer.upsert({
+        where: { playerId: playerId },
+        create: {
           teamId: teamId,
           playerId: playerId,
+          price: winningPrice,
+        },
+        update: {
+          teamId: teamId,
           price: winningPrice,
         },
       });
@@ -838,12 +855,16 @@ export class AuctionEngine {
     await this.prisma.auctionEvent.deleteMany();
     await this.prisma.auctionPlayer.deleteMany();
 
-    // 2. Reset team purses
-    await this.prisma.team.updateMany({
-      data: {
-        remainingPurse: 1000000000,
-      },
-    });
+    // 2. Reset each team's purse back to their configured tournament totalPurse
+    const teams = await this.prisma.team.findMany();
+    for (const t of teams) {
+      await this.prisma.team.update({
+        where: { id: t.id },
+        data: {
+          remainingPurse: t.totalPurse,
+        },
+      });
+    }
 
     // 3. Reset player statuses
     await this.prisma.player.updateMany({
@@ -908,6 +929,7 @@ export class AuctionEngine {
     defaultSquadLimit?: number;
     iconPlayerPrice?: number;
     defaultBasePrice?: number;
+    applyToExistingTeams?: boolean;
   }) {
     const auction = await this.prisma.auction.findFirst({
       orderBy: { createdAt: 'desc' },
@@ -926,6 +948,23 @@ export class AuctionEngine {
         defaultBasePrice: settings.defaultBasePrice ? Number(settings.defaultBasePrice) : auction.defaultBasePrice,
       },
     });
+
+    if (settings.applyToExistingTeams && (settings.defaultPurse || settings.defaultSquadLimit)) {
+      const teams = await this.prisma.team.findMany();
+      for (const t of teams) {
+        const spent = t.totalPurse - t.remainingPurse;
+        const newTotal = settings.defaultPurse ? Number(settings.defaultPurse) : t.totalPurse;
+        const newRemaining = Math.max(0, newTotal - spent);
+        await this.prisma.team.update({
+          where: { id: t.id },
+          data: {
+            totalPurse: newTotal,
+            remainingPurse: newRemaining,
+            maxSquadSize: settings.defaultSquadLimit ? Number(settings.defaultSquadLimit) : t.maxSquadSize,
+          },
+        });
+      }
+    }
 
     if (settings.defaultTimerSec) {
       this.secondsLeft = Number(settings.defaultTimerSec);

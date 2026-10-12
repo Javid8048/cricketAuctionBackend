@@ -272,6 +272,12 @@ export async function deleteTeam(req: Request, res: Response) {
       });
     }
 
+    // Clear nominated belongingTeamId on any players belonging to this team
+    await prisma.player.updateMany({
+      where: { belongingTeamId: id },
+      data: { belongingTeamId: null },
+    });
+
     // 2. Delete teamPlayer records
     await prisma.teamPlayer.deleteMany({
       where: { teamId: id },
@@ -310,9 +316,13 @@ export async function deleteTeam(req: Request, res: Response) {
       where: { id },
     });
 
-    // 8. Broadcast update to real-time clients
+    // 8. Broadcast update to real-time clients with FULL AuctionState
     try {
-      auctionEngine.broadcast('auction:settings_updated', { deletedTeamId: id });
+      const state = await auctionEngine.getAuctionState();
+      if (state) {
+        auctionEngine.broadcast('auction:settings_updated', state);
+        auctionEngine.broadcast('auction:init', state);
+      }
     } catch (_) {}
 
     res.json({ message: 'Team deleted successfully.' });
@@ -513,6 +523,11 @@ export async function removeIconPlayer(req: Request, res: Response) {
  */
 export async function getFranchiseCredentials(req: Request, res: Response) {
   try {
+    const caller = (req as any).user;
+    if (!caller || caller.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Access forbidden. Administrator role required.' });
+    }
+
     const teams = await prisma.team.findMany({
       select: {
         id: true,
@@ -539,6 +554,11 @@ export async function getFranchiseCredentials(req: Request, res: Response) {
  */
 export async function updateFranchiseCredentials(req: Request, res: Response) {
   try {
+    const caller = (req as any).user;
+    if (!caller || caller.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Access forbidden. Administrator role required.' });
+    }
+
     const { id } = req.params;
     const { loginUsername, loginPassword } = req.body;
 

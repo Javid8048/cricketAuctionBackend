@@ -45,6 +45,7 @@ export async function getPlayers(req: Request, res: Response) {
             team: true,
           },
         },
+        belongingTeam: true,
       },
     });
 
@@ -66,6 +67,7 @@ export async function getPlayerById(req: Request, res: Response) {
             team: true,
           },
         },
+        belongingTeam: true,
         bids: {
           orderBy: { createdAt: 'desc' },
           include: {
@@ -140,27 +142,13 @@ export async function registerPlayerPublic(req: Request, res: Response) {
         economy: Number(data.economy || 0),
         bowlingAvg: Number(data.bowlingAvg || 0),
         bestBowling: data.bestBowling || '0/0',
-        status: targetTeamId ? 'SOLD' : 'UPCOMING',
-        currentPrice: targetTeamId ? basePrice : null,
+        status: 'UPCOMING',
+        currentPrice: null,
+        belongingTeamId: targetTeamId,
       },
     });
 
-    if (targetTeamId) {
-      await prisma.team.update({
-        where: { id: targetTeamId },
-        data: { remainingPurse: { decrement: basePrice } },
-      });
-      await prisma.teamPlayer.create({
-        data: {
-          teamId: targetTeamId,
-          playerId: player.id,
-          price: basePrice,
-          isIcon: Boolean(data.isIcon || data.category === 'Icon Player'),
-        },
-      });
-    }
-
-    // Automatically enqueue to the current auction if one exists
+    // Automatically enqueue to the current auction as PENDING if one exists
     const auction = await prisma.auction.findFirst({
       orderBy: { createdAt: 'desc' },
     });
@@ -170,9 +158,9 @@ export async function registerPlayerPublic(req: Request, res: Response) {
         data: {
           auctionId: auction.id,
           playerId: player.id,
-          status: targetTeamId ? 'SOLD' : 'PENDING',
-          winningTeamId: targetTeamId,
-          finalPrice: targetTeamId ? basePrice : null,
+          status: 'PENDING',
+          winningTeamId: null,
+          finalPrice: null,
           orderIndex: count + 1,
           basePrice: player.basePrice,
         },
@@ -196,6 +184,7 @@ export async function registerPlayerPublic(req: Request, res: Response) {
             team: true,
           },
         },
+        belongingTeam: true,
       },
     });
 
@@ -250,30 +239,11 @@ export async function createPlayer(req: Request, res: Response) {
         economy: Number(playerData.economy || 0),
         bowlingAvg: Number(playerData.bowlingAvg || 0),
         bestBowling: playerData.bestBowling || '0/0',
-        status: isAssigned ? 'SOLD' : 'UPCOMING',
-        currentPrice: isAssigned ? basePrice : null,
+        status: 'UPCOMING',
+        currentPrice: null,
+        belongingTeamId: isAssigned ? String(teamId).trim() : null,
       },
     });
-
-    // If a team is selected on player creation
-    if (isAssigned) {
-      await prisma.teamPlayer.create({
-        data: {
-          teamId: teamId,
-          playerId: player.id,
-          price: basePrice,
-          isIcon: Boolean(playerData.isIcon || playerData.category === 'Icon Player'),
-        },
-      });
-
-      // Deduct team's remaining purse
-      await prisma.team.update({
-        where: { id: teamId },
-        data: {
-          remainingPurse: { decrement: basePrice },
-        },
-      });
-    }
 
     const auction = await prisma.auction.findFirst({
       orderBy: { createdAt: 'desc' },
@@ -284,11 +254,11 @@ export async function createPlayer(req: Request, res: Response) {
         data: {
           auctionId: auction.id,
           playerId: player.id,
-          status: isAssigned ? 'SOLD' : 'PENDING',
+          status: 'PENDING',
           orderIndex: count + 1,
           basePrice: player.basePrice,
-          finalPrice: isAssigned ? basePrice : null,
-          winningTeamId: isAssigned ? teamId : null,
+          finalPrice: null,
+          winningTeamId: null,
         },
       });
     }
@@ -301,6 +271,7 @@ export async function createPlayer(req: Request, res: Response) {
             team: true,
           },
         },
+        belongingTeam: true,
       },
     });
 
@@ -342,65 +313,71 @@ export async function updatePlayer(req: Request, res: Response) {
       return res.status(404).json({ error: 'Player not found.' });
     }
 
-    // Handle Team Assignment if teamId was passed in request
+    // Handle Team Assignment / Nomination if teamId was passed in request
     if (teamId !== undefined) {
       const currentTeamPlayer = existingPlayer.teamPlayer;
       const targetTeamId = teamId && teamId !== 'NONE' && String(teamId).trim() !== '' ? String(teamId).trim() : null;
       const priceToUse = Number(playerData.currentPrice || playerData.basePrice || existingPlayer.basePrice || 100);
 
-      if (targetTeamId) {
-        if (currentTeamPlayer) {
-          if (currentTeamPlayer.teamId !== targetTeamId) {
-            // Refund old team
-            await prisma.team.update({
-              where: { id: currentTeamPlayer.teamId },
-              data: { remainingPurse: { increment: currentTeamPlayer.price } },
-            });
-            // Deduct new team
+      // Always update belonging / nominated home team
+      playerData.belongingTeamId = targetTeamId;
+
+      // Only handle squad purse deduction/reassignment if the player was already marked as SOLD
+      if (existingPlayer.status === 'SOLD') {
+        if (targetTeamId) {
+          if (currentTeamPlayer) {
+            if (currentTeamPlayer.teamId !== targetTeamId) {
+              // Refund old team
+              await prisma.team.update({
+                where: { id: currentTeamPlayer.teamId },
+                data: { remainingPurse: { increment: currentTeamPlayer.price } },
+              });
+              // Deduct new team
+              await prisma.team.update({
+                where: { id: targetTeamId },
+                data: { remainingPurse: { decrement: priceToUse } },
+              });
+              // Update teamPlayer row
+              await prisma.teamPlayer.update({
+                where: { id: currentTeamPlayer.id },
+                data: {
+                  teamId: targetTeamId,
+                  price: priceToUse,
+                  isIcon: Boolean(playerData.isIcon || playerData.category === 'Icon Player'),
+                },
+              });
+            }
+          } else {
+            // Newly assigned to a team
             await prisma.team.update({
               where: { id: targetTeamId },
               data: { remainingPurse: { decrement: priceToUse } },
             });
-            // Update teamPlayer row
-            await prisma.teamPlayer.update({
-              where: { id: currentTeamPlayer.id },
+            await prisma.teamPlayer.create({
               data: {
                 teamId: targetTeamId,
+                playerId: id,
                 price: priceToUse,
                 isIcon: Boolean(playerData.isIcon || playerData.category === 'Icon Player'),
               },
             });
           }
+          playerData.status = 'SOLD';
+          playerData.currentPrice = priceToUse;
         } else {
-          // Newly assigned to a team
-          await prisma.team.update({
-            where: { id: targetTeamId },
-            data: { remainingPurse: { decrement: priceToUse } },
-          });
-          await prisma.teamPlayer.create({
-            data: {
-              teamId: targetTeamId,
-              playerId: id,
-              price: priceToUse,
-              isIcon: Boolean(playerData.isIcon || playerData.category === 'Icon Player'),
-            },
-          });
+          // Unassigned / Removed from team (Free agent back to pool)
+          if (currentTeamPlayer) {
+            await prisma.team.update({
+              where: { id: currentTeamPlayer.teamId },
+              data: { remainingPurse: { increment: currentTeamPlayer.price } },
+            });
+            await prisma.teamPlayer.delete({
+              where: { id: currentTeamPlayer.id },
+            });
+          }
+          playerData.status = 'UPCOMING';
+          playerData.currentPrice = null;
         }
-        playerData.status = 'SOLD';
-        playerData.currentPrice = priceToUse;
-      } else {
-        // Unassigned / Removed from team (Free agent)
-        if (currentTeamPlayer) {
-          await prisma.team.update({
-            where: { id: currentTeamPlayer.teamId },
-            data: { remainingPurse: { increment: currentTeamPlayer.price } },
-          });
-          await prisma.teamPlayer.delete({
-            where: { id: currentTeamPlayer.id },
-          });
-        }
-        playerData.status = 'UPCOMING';
-        playerData.currentPrice = null;
       }
     }
 
@@ -427,6 +404,7 @@ export async function updatePlayer(req: Request, res: Response) {
             team: true,
           },
         },
+        belongingTeam: true,
       },
     });
 
