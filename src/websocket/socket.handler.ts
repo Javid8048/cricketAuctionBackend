@@ -39,6 +39,25 @@ export function setupSocketHandlers(io: Server) {
       }
     });
 
+    // Keepalive ping for long-lasting WebSocket connection (prevents proxy timeouts)
+    socket.on('ping:keepalive', () => {
+      socket.emit('pong:keepalive', { time: Date.now() });
+    });
+
+    // Client auth synchronization upon login
+    socket.on('auth:sync', (data: { token?: string }) => {
+      if (data?.token) {
+        try {
+          const payload = verifyToken(data.token);
+          (socket as any).userId = payload.userId;
+          (socket as any).teamId = payload.teamId;
+          socket.emit('auth:synced', { success: true, teamId: payload.teamId });
+        } catch (e) {
+          // invalid token
+        }
+      }
+    });
+
     socket.on('disconnect', () => {
       console.log(`[Socket Disconnected]: ${socket.id}`);
     });

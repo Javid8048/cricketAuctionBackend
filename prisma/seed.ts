@@ -14,8 +14,9 @@ async function main() {
   await prisma.player.deleteMany();
   await prisma.team.deleteMany();
 
-  console.log('--- Seeding Primary Admin: KhaderMeeran / Admin@123 ---');
-  const adminPasswordHash = await bcrypt.hash('Admin@123', 10);
+  console.log('--- Initializing Primary Admin User: KhaderMeeran ---');
+  const initialPassword = process.env.ADMIN_INITIAL_PASSWORD || 'Admin@123';
+  const adminPasswordHash = await bcrypt.hash(initialPassword, 10);
 
   await prisma.user.create({
     data: {
@@ -37,7 +38,7 @@ async function main() {
       role: 'ADMIN',
     },
   });
-  console.log('Created Admin user: UserName: KhaderMeeran, Password: Admin@123');
+  console.log('Admin user initialized securely in Database.');
 
   console.log('--- Initializing Tournament Auction Settings (Purse: ₹15,000, Squad Limit: 12) ---');
   const auction = await prisma.auction.create({
