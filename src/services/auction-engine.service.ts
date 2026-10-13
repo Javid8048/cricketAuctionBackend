@@ -269,14 +269,16 @@ export class AuctionEngine {
       data: { status: 'UPCOMING' },
     });
 
+    // Put this player into auction with base price
     await this.prisma.player.update({
       where: { id: playerId },
-      data: { status: 'IN_AUCTION' },
+      data: { status: 'IN_AUCTION', currentPrice: player.basePrice },
     });
 
     // Update auction player entry
     let auctionPlayer = await this.prisma.auctionPlayer.findFirst({
       where: { auctionId: auction.id, playerId: playerId },
+      orderBy: { createdAt: 'desc' },
     });
 
     if (!auctionPlayer) {
@@ -296,10 +298,16 @@ export class AuctionEngine {
       });
     }
 
-    // Update auction
+    // Clear prior bids for this player so bidding starts fresh at base price
+    await this.prisma.bid.deleteMany({
+      where: { auctionId: auction.id, playerId: playerId },
+    });
+
+    // Update auction to ACTIVE status so teams can bid immediately
     await this.prisma.auction.update({
       where: { id: auction.id },
       data: {
+        status: 'ACTIVE',
         activePlayerId: playerId,
         activePlayerPrice: player.basePrice,
         highestBidTeamId: null,
@@ -307,11 +315,13 @@ export class AuctionEngine {
     });
 
     this.secondsLeft = auction.defaultTimerSec || 10;
-    if (auction.status === 'ACTIVE' && auction.timerEnabled !== false) {
+    if (auction.timerEnabled !== false) {
       this.startTimer();
     }
     const state = await this.getAuctionState();
     this.broadcast('auction:player', state);
+    this.broadcast('auction:resumed', state);
+    this.broadcast('auction:players_updated', state);
     return state;
   }
 
@@ -799,18 +809,24 @@ export class AuctionEngine {
     // Find all currently unsold players
     const unsoldPlayers = await this.prisma.player.findMany({
       where: { status: 'UNSOLD' },
+      orderBy: { sNo: 'asc' },
     });
 
     if (unsoldPlayers.length === 0) {
       throw new Error('There are currently no unsold players to re-auction.');
     }
 
-    // Reset status to UPCOMING and create new AuctionPlayer entries for round 2
+    // Reset status to UPCOMING and create new AuctionPlayer entries for next round
     for (let i = 0; i < unsoldPlayers.length; i++) {
       const p = unsoldPlayers[i];
       await this.prisma.player.update({
         where: { id: p.id },
-        data: { status: 'UPCOMING' },
+        data: { status: 'UPCOMING', currentPrice: p.basePrice },
+      });
+
+      // Clear any prior failed bids for this player
+      await this.prisma.bid.deleteMany({
+        where: { auctionId: auction.id, playerId: p.id },
       });
 
       await this.prisma.auctionPlayer.create({
@@ -836,7 +852,9 @@ export class AuctionEngine {
       },
     });
 
-    return await this.nextPlayer();
+    const state = await this.nextPlayer();
+    this.broadcast('auction:players_updated', state);
+    return state;
   }
 
   /**
