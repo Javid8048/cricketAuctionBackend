@@ -1,13 +1,35 @@
 import { Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { prisma } from '../prisma';
 import { auctionEngine } from './auction.controller';
-import { saveDatabaseSnapshot } from '../utils/persistence';
+import { triggerDebouncedSnapshot } from '../utils/persistence';
 
-const prisma = new PrismaClient();
+// In-memory cache for ultra-fast player list retrieval
+let cachedPlayersData: any[] | null = null;
+let playersCacheTimestamp: number = 0;
+const PLAYERS_CACHE_TTL_MS = 15000; // 15 seconds
+
+export function invalidatePlayersCache() {
+  cachedPlayersData = null;
+  playersCacheTimestamp = 0;
+}
+
+// Automatically clear cache whenever auction engine invalidates
+auctionEngine.onInvalidate(invalidatePlayersCache);
 
 export async function getPlayers(req: Request, res: Response) {
   try {
     const { role, country, category, status, search } = req.query;
+
+    const isUnfiltered =
+      (!role || role === 'ALL') &&
+      (!country || country === 'ALL') &&
+      (!category || category === 'ALL') &&
+      (!status || status === 'ALL') &&
+      !search;
+
+    if (isUnfiltered && cachedPlayersData && (Date.now() - playersCacheTimestamp < PLAYERS_CACHE_TTL_MS)) {
+      return res.json(cachedPlayersData);
+    }
 
     const where: any = {};
 
@@ -49,6 +71,11 @@ export async function getPlayers(req: Request, res: Response) {
         belongingTeam: true,
       },
     });
+
+    if (isUnfiltered) {
+      cachedPlayersData = players;
+      playersCacheTimestamp = Date.now();
+    }
 
     res.json(players);
   } catch (error: any) {
@@ -147,38 +174,6 @@ export async function registerPlayerPublic(req: Request, res: Response) {
         currentPrice: null,
         belongingTeamId: targetTeamId,
       },
-    });
-
-    // Automatically enqueue to the current auction as PENDING if one exists
-    const auction = await prisma.auction.findFirst({
-      orderBy: { createdAt: 'desc' },
-    });
-    if (auction) {
-      const count = await prisma.auctionPlayer.count({ where: { auctionId: auction.id } });
-      await prisma.auctionPlayer.create({
-        data: {
-          auctionId: auction.id,
-          playerId: player.id,
-          status: 'PENDING',
-          winningTeamId: null,
-          finalPrice: null,
-          orderIndex: count + 1,
-          basePrice: player.basePrice,
-        },
-      });
-    }
-
-    try {
-      const state = await auctionEngine.getAuctionState();
-      if (state) {
-        auctionEngine.broadcast('auction:init', state);
-      }
-    } catch (e) {
-      // non-fatal broadcast error
-    }
-
-    const createdPlayer = await prisma.player.findUnique({
-      where: { id: player.id },
       include: {
         teamPlayer: {
           include: {
@@ -189,12 +184,43 @@ export async function registerPlayerPublic(req: Request, res: Response) {
       },
     });
 
-    saveDatabaseSnapshot().catch(() => {});
+    // Invalidate auction engine cache for fast updates
+    auctionEngine.invalidateCache();
 
+    // Automatically enqueue to the current auction as PENDING if one exists
+    const auction = await prisma.auction.findFirst({
+      orderBy: { createdAt: 'desc' },
+    });
+    if (auction) {
+      await prisma.auctionPlayer.create({
+        data: {
+          auctionId: auction.id,
+          playerId: player.id,
+          status: 'PENDING',
+          winningTeamId: null,
+          finalPrice: null,
+          orderIndex: 999,
+          basePrice: player.basePrice,
+        },
+      });
+    }
+
+    // Return instant HTTP response to user without waiting for heavy background tasks
     res.status(201).json({
       success: true,
       message: `Registration successful! Your S.No is #${sNo}`,
-      player: createdPlayer || player,
+      player,
+    });
+
+    // Asynchronous broadcast & debounced snapshot in background
+    setImmediate(async () => {
+      try {
+        const state = await auctionEngine.getAuctionState();
+        if (state) {
+          auctionEngine.broadcast('auction:init', state);
+        }
+      } catch (_) {}
+      triggerDebouncedSnapshot();
     });
   } catch (error: any) {
     console.error('Public player registration error:', error);
@@ -246,28 +272,6 @@ export async function createPlayer(req: Request, res: Response) {
         currentPrice: null,
         belongingTeamId: isAssigned ? String(teamId).trim() : null,
       },
-    });
-
-    const auction = await prisma.auction.findFirst({
-      orderBy: { createdAt: 'desc' },
-    });
-    if (auction) {
-      const count = await prisma.auctionPlayer.count({ where: { auctionId: auction.id } });
-      await prisma.auctionPlayer.create({
-        data: {
-          auctionId: auction.id,
-          playerId: player.id,
-          status: 'PENDING',
-          orderIndex: count + 1,
-          basePrice: player.basePrice,
-          finalPrice: null,
-          winningTeamId: null,
-        },
-      });
-    }
-
-    const createdPlayer = await prisma.player.findUnique({
-      where: { id: player.id },
       include: {
         teamPlayer: {
           include: {
@@ -278,18 +282,39 @@ export async function createPlayer(req: Request, res: Response) {
       },
     });
 
-    try {
-      const state = await auctionEngine.getAuctionState();
-      if (state) {
-        auctionEngine.broadcast('auction:init', state);
-      }
-    } catch (e) {
-      // non-fatal broadcast error
+    // Invalidate auction engine cache for fast updates
+    auctionEngine.invalidateCache();
+
+    const auction = await prisma.auction.findFirst({
+      orderBy: { createdAt: 'desc' },
+    });
+    if (auction) {
+      await prisma.auctionPlayer.create({
+        data: {
+          auctionId: auction.id,
+          playerId: player.id,
+          status: 'PENDING',
+          orderIndex: 999,
+          basePrice: player.basePrice,
+          finalPrice: null,
+          winningTeamId: null,
+        },
+      });
     }
 
-    saveDatabaseSnapshot().catch(() => {});
+    // Return instant HTTP response
+    res.status(201).json(player);
 
-    res.status(201).json(createdPlayer);
+    // Asynchronous broadcast & debounced snapshot in background
+    setImmediate(async () => {
+      try {
+        const state = await auctionEngine.getAuctionState();
+        if (state) {
+          auctionEngine.broadcast('auction:init', state);
+        }
+      } catch (_) {}
+      triggerDebouncedSnapshot();
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to create player.' });
   }
@@ -413,18 +438,22 @@ export async function updatePlayer(req: Request, res: Response) {
       },
     });
 
-    try {
-      const state = await auctionEngine.getAuctionState();
-      if (state) {
-        auctionEngine.broadcast('auction:init', state);
-      }
-    } catch (e) {
-      // non-fatal broadcast error
-    }
+    // Invalidate auction engine cache for fast updates
+    auctionEngine.invalidateCache();
 
-    saveDatabaseSnapshot().catch(() => {});
-
+    // Return instant HTTP response
     res.json(player);
+
+    // Asynchronous broadcast & debounced snapshot in background
+    setImmediate(async () => {
+      try {
+        const state = await auctionEngine.getAuctionState();
+        if (state) {
+          auctionEngine.broadcast('auction:init', state);
+        }
+      } catch (_) {}
+      triggerDebouncedSnapshot();
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to update player.' });
   }
@@ -438,18 +467,22 @@ export async function deletePlayer(req: Request, res: Response) {
       where: { id },
     });
 
-    try {
-      const state = await auctionEngine.getAuctionState();
-      if (state) {
-        auctionEngine.broadcast('auction:init', state);
-      }
-    } catch (e) {
-      // non-fatal broadcast error
-    }
+    // Invalidate auction engine cache for fast updates
+    auctionEngine.invalidateCache();
 
-    saveDatabaseSnapshot().catch(() => {});
-
+    // Return instant HTTP response
     res.json({ message: 'Player removed successfully.' });
+
+    // Asynchronous broadcast & debounced snapshot in background
+    setImmediate(async () => {
+      try {
+        const state = await auctionEngine.getAuctionState();
+        if (state) {
+          auctionEngine.broadcast('auction:init', state);
+        }
+      } catch (_) {}
+      triggerDebouncedSnapshot();
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to remove player.' });
   }

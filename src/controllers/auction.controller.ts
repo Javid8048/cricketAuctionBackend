@@ -1,9 +1,8 @@
 import { Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { prisma } from '../prisma';
 import { AuctionEngine } from '../services/auction-engine.service';
 import { AuthenticatedRequest } from '../middleware/auth.middleware';
 
-const prisma = new PrismaClient();
 export const auctionEngine = new AuctionEngine(prisma);
 
 export async function getCurrentAuction(req: Request, res: Response) {

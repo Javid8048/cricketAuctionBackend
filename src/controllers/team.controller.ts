@@ -1,14 +1,29 @@
 import { Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { prisma } from '../prisma';
 import bcrypt from 'bcryptjs';
 import { formatRupees } from '../utils/currency';
 import { auctionEngine } from './auction.controller';
-import { saveDatabaseSnapshot } from '../utils/persistence';
+import { triggerDebouncedSnapshot } from '../utils/persistence';
 
-const prisma = new PrismaClient();
+// In-memory cache for ultra-fast teams list retrieval
+let cachedTeamsData: any[] | null = null;
+let teamsCacheTimestamp: number = 0;
+const TEAMS_CACHE_TTL_MS = 15000; // 15 seconds
+
+export function invalidateTeamsCache() {
+  cachedTeamsData = null;
+  teamsCacheTimestamp = 0;
+}
+
+// Automatically clear cache whenever auction engine invalidates
+auctionEngine.onInvalidate(invalidateTeamsCache);
 
 export async function getTeams(req: Request, res: Response) {
   try {
+    if (cachedTeamsData && (Date.now() - teamsCacheTimestamp < TEAMS_CACHE_TTL_MS)) {
+      return res.json(cachedTeamsData);
+    }
+
     const teams = await prisma.team.findMany({
       include: {
         squad: {
@@ -41,6 +56,9 @@ export async function getTeams(req: Request, res: Response) {
         totalSpent,
       };
     });
+
+    cachedTeamsData = formatted;
+    teamsCacheTimestamp = Date.now();
 
     res.json(formatted);
   } catch (error: any) {
@@ -167,9 +185,19 @@ export async function createTeam(req: Request, res: Response) {
       }
     }
 
-    saveDatabaseSnapshot().catch(() => {});
+    auctionEngine.invalidateCache();
 
     res.status(201).json(team);
+
+    setImmediate(async () => {
+      try {
+        const state = await auctionEngine.getAuctionState();
+        if (state) {
+          auctionEngine.broadcast('auction:settings_updated', state);
+        }
+      } catch (_) {}
+      triggerDebouncedSnapshot();
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to create team.' });
   }
@@ -248,9 +276,19 @@ export async function updateTeam(req: Request, res: Response) {
       }
     }
 
-    saveDatabaseSnapshot().catch(() => {});
+    auctionEngine.invalidateCache();
 
     res.json(team);
+
+    setImmediate(async () => {
+      try {
+        const state = await auctionEngine.getAuctionState();
+        if (state) {
+          auctionEngine.broadcast('auction:settings_updated', state);
+        }
+      } catch (_) {}
+      triggerDebouncedSnapshot();
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to update team.' });
   }
@@ -260,14 +298,16 @@ export async function deleteTeam(req: Request, res: Response) {
   try {
     const { id } = req.params;
 
-    // 1. Find all players in this team's squad and revert them to UPCOMING
+    // 1. Revert all squad players to UPCOMING in a single batch query
     const squadPlayers = await prisma.teamPlayer.findMany({
       where: { teamId: id },
+      select: { playerId: true },
     });
 
-    for (const sp of squadPlayers) {
-      await prisma.player.update({
-        where: { id: sp.playerId },
+    const playerIds = squadPlayers.map((sp) => sp.playerId);
+    if (playerIds.length > 0) {
+      await prisma.player.updateMany({
+        where: { id: { in: playerIds } },
         data: {
           status: 'UPCOMING',
           currentPrice: null,
@@ -277,62 +317,58 @@ export async function deleteTeam(req: Request, res: Response) {
       });
     }
 
-    // Clear nominated belongingTeamId on any players belonging to this team
-    await prisma.player.updateMany({
-      where: { belongingTeamId: id },
-      data: { belongingTeamId: null },
-    });
+    // 2. Parallel cleanup of related records and team deletion
+    await Promise.all([
+      prisma.player.updateMany({
+        where: { belongingTeamId: id },
+        data: { belongingTeamId: null },
+      }),
+      prisma.teamPlayer.deleteMany({
+        where: { teamId: id },
+      }),
+      prisma.user.deleteMany({
+        where: { teamId: id },
+      }),
+      prisma.bid.deleteMany({
+        where: { teamId: id },
+      }),
+      prisma.auctionPlayer.updateMany({
+        where: { winningTeamId: id },
+        data: {
+          winningTeamId: null,
+          status: 'PENDING',
+          finalPrice: null,
+        },
+      }),
+      prisma.auction.updateMany({
+        where: { highestBidTeamId: id },
+        data: {
+          highestBidTeamId: null,
+        },
+      }),
+    ]);
 
-    // 2. Delete teamPlayer records
-    await prisma.teamPlayer.deleteMany({
-      where: { teamId: id },
-    });
-
-    // 3. Delete user credentials linked to this team
-    await prisma.user.deleteMany({
-      where: { teamId: id },
-    });
-
-    // 4. Delete bids placed by this team
-    await prisma.bid.deleteMany({
-      where: { teamId: id },
-    });
-
-    // 5. Reset winning team on any AuctionPlayer
-    await prisma.auctionPlayer.updateMany({
-      where: { winningTeamId: id },
-      data: {
-        winningTeamId: null,
-        status: 'PENDING',
-        finalPrice: null,
-      },
-    });
-
-    // 6. Reset active auction highestBidTeamId if it matches
-    await prisma.auction.updateMany({
-      where: { highestBidTeamId: id },
-      data: {
-        highestBidTeamId: null,
-      },
-    });
-
-    // 7. Delete the team itself
     await prisma.team.delete({
       where: { id },
     });
 
-    // 8. Broadcast update to real-time clients with FULL AuctionState
-    try {
-      const state = await auctionEngine.getAuctionState();
-      if (state) {
-        auctionEngine.broadcast('auction:settings_updated', state);
-        auctionEngine.broadcast('auction:init', state);
-      }
-    } catch (_) {}
+    // Invalidate auction engine cache for fast updates
+    auctionEngine.invalidateCache();
 
-    saveDatabaseSnapshot().catch(() => {});
-
+    // Return instant HTTP response
     res.json({ message: 'Team deleted successfully.' });
+
+    // Asynchronous broadcast & debounced snapshot in background
+    setImmediate(async () => {
+      try {
+        const state = await auctionEngine.getAuctionState();
+        if (state) {
+          auctionEngine.broadcast('auction:settings_updated', state);
+          auctionEngine.broadcast('auction:init', state);
+        }
+      } catch (_) {}
+      triggerDebouncedSnapshot();
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to delete team.' });
   }
@@ -449,7 +485,8 @@ export async function assignIconPlayer(req: Request, res: Response) {
       }
     }, { maxWait: 15000, timeout: 30000 });
 
-    saveDatabaseSnapshot().catch(() => {});
+    auctionEngine.invalidateCache();
+    triggerDebouncedSnapshot();
 
     res.json({
       success: true,
@@ -517,7 +554,8 @@ export async function removeIconPlayer(req: Request, res: Response) {
       }
     }, { maxWait: 15000, timeout: 30000 });
 
-    saveDatabaseSnapshot().catch(() => {});
+    auctionEngine.invalidateCache();
+    triggerDebouncedSnapshot();
 
     res.json({
       success: true,

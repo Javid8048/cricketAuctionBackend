@@ -1,8 +1,21 @@
-import { PrismaClient } from '@prisma/client';
+import { prisma } from '../prisma';
 import fs from 'fs';
 import path from 'path';
 
-const prisma = new PrismaClient();
+let snapshotDebounceTimer: NodeJS.Timeout | null = null;
+
+/**
+ * Triggers a debounced database snapshot in background.
+ * Collapses rapid mutations (create, update, delete) into a single snapshot 5 seconds after activity stops.
+ */
+export function triggerDebouncedSnapshot(): void {
+  if (snapshotDebounceTimer) {
+    clearTimeout(snapshotDebounceTimer);
+  }
+  snapshotDebounceTimer = setTimeout(() => {
+    saveDatabaseSnapshot().catch(() => {});
+  }, 5000);
+}
 
 /**
  * Creates a durable backup snapshot of players, teams, squads, and users.
@@ -15,13 +28,16 @@ export async function saveDatabaseSnapshot(): Promise<void> {
       fs.mkdirSync(backupDir, { recursive: true });
     }
 
-    const players = await prisma.player.findMany({ include: { teamPlayer: true, belongingTeam: true } });
-    const teams = await prisma.team.findMany({ include: { squad: true } });
-    const teamPlayers = await prisma.teamPlayer.findMany();
-    const users = await prisma.user.findMany();
-    const auctions = await prisma.auction.findMany();
-    const auctionPlayers = await prisma.auctionPlayer.findMany();
-    const bids = await prisma.bid.findMany();
+    // Query all entities concurrently in parallel
+    const [players, teams, teamPlayers, users, auctions, auctionPlayers, bids] = await Promise.all([
+      prisma.player.findMany({ include: { teamPlayer: true, belongingTeam: true } }),
+      prisma.team.findMany({ include: { squad: true } }),
+      prisma.teamPlayer.findMany(),
+      prisma.user.findMany(),
+      prisma.auction.findMany(),
+      prisma.auctionPlayer.findMany(),
+      prisma.bid.findMany(),
+    ]);
 
     const backupData = {
       backupDate: new Date().toISOString(),
