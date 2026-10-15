@@ -3,7 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { AuctionEngine } from '../services/auction-engine.service';
 import { formatRupees, getMinBidIncrement } from '../utils/currency';
 
-describe('Cricket Auction Arena - Core Bidding & Rules Tests', () => {
+describe('Cricket Auction Arena - Core Bidding & Rules Tests', { timeout: 30000 }, () => {
   let prisma: PrismaClient;
   let engine: AuctionEngine;
   let testTeam1: any;

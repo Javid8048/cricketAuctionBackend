@@ -12,15 +12,13 @@ async function backup() {
       fs.mkdirSync(backupDir, { recursive: true });
     }
 
-    const [players, teams, teamPlayers, users, auctions, auctionPlayers, bids] = await Promise.all([
-      prisma.player.findMany({ include: { teamPlayer: true } }),
-      prisma.team.findMany({ include: { squad: true } }),
-      prisma.teamPlayer.findMany(),
-      prisma.user.findMany(),
-      prisma.auction.findMany(),
-      prisma.auctionPlayer.findMany(),
-      prisma.bid.findMany(),
-    ]);
+    const players = await prisma.player.findMany({ include: { teamPlayer: true } });
+    const teams = await prisma.team.findMany({ include: { squad: true } });
+    const teamPlayers = await prisma.teamPlayer.findMany();
+    const users = await prisma.user.findMany();
+    const auctions = await prisma.auction.findMany();
+    const auctionPlayers = await prisma.auctionPlayer.findMany();
+    const bids = await prisma.bid.findMany();
 
     const backupData = {
       backupDate: new Date().toISOString(),

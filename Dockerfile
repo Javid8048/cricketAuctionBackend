@@ -5,9 +5,8 @@ RUN apk add --no-cache openssl libc6-compat
 
 WORKDIR /app
 
-# Define build environment variables (DATABASE_URL is required for prisma db push)
+# Define build environment variables
 ENV PORT=5000 \
-    DATABASE_URL="file:./dev.db" \
     JWT_SECRET="cricket-auction-arena-production-secret-2026"
 
 # Copy package descriptors and prisma schema
@@ -22,13 +21,10 @@ RUN npx prisma generate
 COPY . .
 RUN npm run build
 
-# Initialize SQLite database and seed initial teams & players
-RUN npx prisma db push
-RUN npx ts-node prisma/seed.ts
-
 # Set runtime environment
 ENV NODE_ENV=production
 
 EXPOSE 5000
 
-CMD ["node", "dist/server.js"]
+# At runtime, sync database tables, verify seed data, and start server
+CMD ["sh", "-c", "npx prisma db push --skip-generate && npx ts-node prisma/seed.ts && node dist/server.js"]

@@ -15,15 +15,13 @@ export async function saveDatabaseSnapshot(): Promise<void> {
       fs.mkdirSync(backupDir, { recursive: true });
     }
 
-    const [players, teams, teamPlayers, users, auctions, auctionPlayers, bids] = await Promise.all([
-      prisma.player.findMany({ include: { teamPlayer: true, belongingTeam: true } }),
-      prisma.team.findMany({ include: { squad: true } }),
-      prisma.teamPlayer.findMany(),
-      prisma.user.findMany(),
-      prisma.auction.findMany(),
-      prisma.auctionPlayer.findMany(),
-      prisma.bid.findMany(),
-    ]);
+    const players = await prisma.player.findMany({ include: { teamPlayer: true, belongingTeam: true } });
+    const teams = await prisma.team.findMany({ include: { squad: true } });
+    const teamPlayers = await prisma.teamPlayer.findMany();
+    const users = await prisma.user.findMany();
+    const auctions = await prisma.auction.findMany();
+    const auctionPlayers = await prisma.auctionPlayer.findMany();
+    const bids = await prisma.bid.findMany();
 
     const backupData = {
       backupDate: new Date().toISOString(),
@@ -145,11 +143,25 @@ export async function restoreDatabaseIfEmpty(): Promise<boolean> {
     if (Array.isArray(backupData.users)) {
       for (const u of backupData.users) {
         const { team, ...userFields } = u;
-        await prisma.user.upsert({
-          where: { id: u.id },
-          update: userFields,
-          create: userFields,
+        const existing = await prisma.user.findFirst({
+          where: {
+            OR: [
+              { id: u.id },
+              { email: u.email },
+              ...(u.username ? [{ username: u.username }] : []),
+            ],
+          },
         });
+        if (existing) {
+          await prisma.user.update({
+            where: { id: existing.id },
+            data: userFields,
+          });
+        } else {
+          await prisma.user.create({
+            data: userFields,
+          });
+        }
       }
       console.log(`[PERSISTENCE AUTO-RESTORE] Restored ${backupData.users.length} users.`);
     }
