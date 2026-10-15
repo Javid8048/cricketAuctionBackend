@@ -272,4 +272,61 @@ describe('Cricket Auction Arena - Core Bidding & Rules Tests', () => {
     const playerRecord = await prisma.player.findUnique({ where: { id: testPlayerDomestic.id } });
     expect(playerRecord!.status).toBe('SOLD');
   });
+
+  it('Allows any rival team to bid on and purchase a player affiliated to another belonging team', async () => {
+    // Create player belonging to Team 1
+    const affiliatedPlayer = await prisma.player.create({
+      data: {
+        name: 'Team 1 Home Player',
+        profileImage: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400',
+        country: 'India',
+        role: 'All-Rounder',
+        basePrice: 200,
+        belongingTeamId: testTeam1.id,
+        status: 'UPCOMING',
+      },
+    });
+
+    const auction = await prisma.auction.findFirst();
+    await prisma.auctionPlayer.create({
+      data: {
+        auctionId: auction!.id,
+        playerId: affiliatedPlayer.id,
+        status: 'PENDING',
+        orderIndex: 999,
+        basePrice: 200,
+      },
+    });
+
+    await engine.selectPlayer(affiliatedPlayer.id);
+
+    // Team 2 (rival team) bids on Team 1's affiliated player
+    await engine.placeBid(testTeam2.id, 200);
+
+    const sellRes = await engine.sellPlayer();
+    expect(sellRes.success).toBe(true);
+    expect(sellRes.winningTeam.id).toBe(testTeam2.id);
+
+    // Verify player is now in Team 2's tournament squad, while belongingTeamId remains Team 1
+    const finalPlayer = await prisma.player.findUnique({
+      where: { id: affiliatedPlayer.id },
+      include: { teamPlayer: { include: { team: true } }, belongingTeam: true },
+    });
+
+    expect(finalPlayer!.status).toBe('SOLD');
+    expect(finalPlayer!.belongingTeamId).toBe(testTeam1.id);
+    expect(finalPlayer!.teamPlayer?.teamId).toBe(testTeam2.id);
+
+    // Clean up
+    await prisma.teamPlayer.deleteMany({ where: { playerId: affiliatedPlayer.id } });
+    await prisma.auctionPlayer.deleteMany({ where: { playerId: affiliatedPlayer.id } });
+    await prisma.bid.deleteMany({ where: { playerId: affiliatedPlayer.id } });
+    await prisma.player.delete({ where: { id: affiliatedPlayer.id } });
+  });
+
+  it('Successfully shuffles pending auction pool order', async () => {
+    const shuffleResult = await engine.shuffleAuctionPool();
+    expect(shuffleResult).toBeDefined();
+    expect(shuffleResult.auction).toBeDefined();
+  });
 });

@@ -809,11 +809,16 @@ export class AuctionEngine {
     // Find all currently unsold players
     const unsoldPlayers = await this.prisma.player.findMany({
       where: { status: 'UNSOLD' },
-      orderBy: { sNo: 'asc' },
     });
 
     if (unsoldPlayers.length === 0) {
       throw new Error('There are currently no unsold players to re-auction.');
+    }
+
+    // Shuffle unsold players so they enter the next bidding round in randomized order
+    for (let i = unsoldPlayers.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [unsoldPlayers[i], unsoldPlayers[j]] = [unsoldPlayers[j], unsoldPlayers[i]];
     }
 
     // Reset status to UPCOMING and create new AuctionPlayer entries for next round
@@ -911,10 +916,12 @@ export class AuctionEngine {
         },
       });
 
-      // Re-enqueue all players
-      const allPlayers = await this.prisma.player.findMany({
-        orderBy: { basePrice: 'desc' },
-      });
+      // Re-enqueue all players with Fisher-Yates shuffle so players belonging to all teams and free agents are mixed
+      const allPlayers = await this.prisma.player.findMany();
+      for (let i = allPlayers.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [allPlayers[i], allPlayers[j]] = [allPlayers[j], allPlayers[i]];
+      }
 
       for (let idx = 0; idx < allPlayers.length; idx++) {
         await this.prisma.auctionPlayer.create({
@@ -933,6 +940,62 @@ export class AuctionEngine {
     this.secondsLeft = 10;
     const state = await this.getAuctionState();
     this.broadcast('auction:reset', state);
+    return state;
+  }
+
+  /**
+   * Shuffle all pending players in the current auction pool
+   * Randomizes the order so players belonging to different teams and free agents
+   * are mixed fairly before and during auction draft rounds.
+   */
+  public async shuffleAuctionPool() {
+    const auction = await this.prisma.auction.findFirst({
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!auction) throw new Error('No auction found');
+
+    const pendingAuctionPlayers = await this.prisma.auctionPlayer.findMany({
+      where: {
+        auctionId: auction.id,
+        status: 'PENDING',
+      },
+    });
+
+    if (pendingAuctionPlayers.length <= 1) {
+      const state = await this.getAuctionState();
+      return state;
+    }
+
+    // Fisher-Yates shuffle
+    const shuffled = [...pendingAuctionPlayers];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+
+    // Update orderIndex
+    for (let idx = 0; idx < shuffled.length; idx++) {
+      await this.prisma.auctionPlayer.update({
+        where: { id: shuffled[idx].id },
+        data: { orderIndex: idx + 1 },
+      });
+    }
+
+    await this.prisma.auctionEvent.create({
+      data: {
+        auctionId: auction.id,
+        type: 'SHUFFLED',
+        message: `Auction pool shuffled! ${shuffled.length} upcoming players randomized.`,
+        metadata: JSON.stringify({ count: shuffled.length }),
+      },
+    });
+
+    const state = await this.getAuctionState();
+    this.broadcast('auction:players_updated', state);
+    this.broadcast('auction:shuffled', {
+      message: `Auction pool shuffled! ${shuffled.length} upcoming players randomized.`,
+      state,
+    });
     return state;
   }
 

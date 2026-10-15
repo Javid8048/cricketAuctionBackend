@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { auctionEngine } from './auction.controller';
+import { saveDatabaseSnapshot } from '../utils/persistence';
 
 const prisma = new PrismaClient();
 
@@ -188,6 +189,8 @@ export async function registerPlayerPublic(req: Request, res: Response) {
       },
     });
 
+    saveDatabaseSnapshot().catch(() => {});
+
     res.status(201).json({
       success: true,
       message: `Registration successful! Your S.No is #${sNo}`,
@@ -283,6 +286,8 @@ export async function createPlayer(req: Request, res: Response) {
     } catch (e) {
       // non-fatal broadcast error
     }
+
+    saveDatabaseSnapshot().catch(() => {});
 
     res.status(201).json(createdPlayer);
   } catch (error: any) {
@@ -417,6 +422,8 @@ export async function updatePlayer(req: Request, res: Response) {
       // non-fatal broadcast error
     }
 
+    saveDatabaseSnapshot().catch(() => {});
+
     res.json(player);
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to update player.' });
@@ -439,6 +446,8 @@ export async function deletePlayer(req: Request, res: Response) {
     } catch (e) {
       // non-fatal broadcast error
     }
+
+    saveDatabaseSnapshot().catch(() => {});
 
     res.json({ message: 'Player removed successfully.' });
   } catch (error: any) {

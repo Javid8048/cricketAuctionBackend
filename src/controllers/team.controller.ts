@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { formatRupees } from '../utils/currency';
 import { auctionEngine } from './auction.controller';
+import { saveDatabaseSnapshot } from '../utils/persistence';
 
 const prisma = new PrismaClient();
 
@@ -166,6 +167,8 @@ export async function createTeam(req: Request, res: Response) {
       }
     }
 
+    saveDatabaseSnapshot().catch(() => {});
+
     res.status(201).json(team);
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to create team.' });
@@ -244,6 +247,8 @@ export async function updateTeam(req: Request, res: Response) {
         });
       }
     }
+
+    saveDatabaseSnapshot().catch(() => {});
 
     res.json(team);
   } catch (error: any) {
@@ -324,6 +329,8 @@ export async function deleteTeam(req: Request, res: Response) {
         auctionEngine.broadcast('auction:init', state);
       }
     } catch (_) {}
+
+    saveDatabaseSnapshot().catch(() => {});
 
     res.json({ message: 'Team deleted successfully.' });
   } catch (error: any) {
@@ -442,6 +449,8 @@ export async function assignIconPlayer(req: Request, res: Response) {
       }
     });
 
+    saveDatabaseSnapshot().catch(() => {});
+
     res.json({
       success: true,
       message: `${player.name} assigned as Icon player for ${team.name} (-${formatRupees(deductionAmount)} deducted from purse).`,
@@ -507,6 +516,8 @@ export async function removeIconPlayer(req: Request, res: Response) {
         });
       }
     });
+
+    saveDatabaseSnapshot().catch(() => {});
 
     res.json({
       success: true,

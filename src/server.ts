@@ -19,6 +19,13 @@ const io = new SocketIOServer(server, {
 
 setupSocketHandlers(io);
 
+// Auto-restore data durability check
+import('./utils/persistence').then(({ restoreDatabaseIfEmpty }) => {
+  restoreDatabaseIfEmpty().catch((err) => {
+    console.error('[STARTUP PERSISTENCE CHECK ERROR]', err);
+  });
+});
+
 server.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`====================================================`);
   console.log(`🏏 CRICKET AUCTION ARENA - BACKEND SERVER RUNNING 🏏`);

@@ -1,12 +1,12 @@
 {
-  "backupDate": "2026-10-13T17:06:19.359Z",
+  "backupDate": "2026-10-15T16:11:39.827Z",
   "counts": {
-    "players": 6,
+    "players": 7,
     "teams": 2,
-    "teamPlayers": 5,
+    "teamPlayers": 7,
     "users": 4,
     "auctions": 1,
-    "auctionPlayers": 6,
+    "auctionPlayers": 8,
     "bids": 0
   },
   "players": [
@@ -201,12 +201,19 @@
       "economy": 0,
       "bowlingAvg": 0,
       "bestBowling": "0/0",
-      "status": "UNSOLD",
-      "currentPrice": null,
+      "status": "SOLD",
+      "currentPrice": 100,
       "belongingTeamId": null,
       "createdAt": "2026-10-12T15:48:02.993Z",
-      "updatedAt": "2026-10-13T16:36:14.345Z",
-      "teamPlayer": null
+      "updatedAt": "2026-10-13T17:31:10.466Z",
+      "teamPlayer": {
+        "id": "f2c18a8f-dd09-4392-bc0e-66f747d8076a",
+        "teamId": "074e1804-93a6-4b0d-9274-5e91923c814c",
+        "playerId": "886c921e-7e14-49da-bdeb-2b2a4951bdce",
+        "price": 100,
+        "isIcon": false,
+        "acquiredAt": "2026-10-13T17:31:10.462Z"
+      }
     },
     {
       "id": "da42db58-bb7a-477c-a341-f7d944fab1d4",
@@ -247,6 +254,47 @@
         "price": 200,
         "isIcon": false,
         "acquiredAt": "2026-10-13T16:35:04.870Z"
+      }
+    },
+    {
+      "id": "d396cc78-b23b-4442-8a17-993f4d5f0c90",
+      "sNo": 7,
+      "name": "JAVID",
+      "profileImage": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80",
+      "country": "India",
+      "isOverseas": false,
+      "age": 20,
+      "dob": "2005-12-12",
+      "place": "CHENNAI",
+      "phone": "9876543210",
+      "role": "All-Rounder",
+      "battingStyle": "Right-hand bat",
+      "bowlingStyle": "Right-arm medium",
+      "basePrice": 100,
+      "category": "Local Talent",
+      "isIcon": false,
+      "iconPrice": null,
+      "matches": 0,
+      "runs": 0,
+      "battingAvg": 0,
+      "strikeRate": 0,
+      "highestScore": 0,
+      "wickets": 0,
+      "economy": 0,
+      "bowlingAvg": 0,
+      "bestBowling": "0/0",
+      "status": "SOLD",
+      "currentPrice": 100,
+      "belongingTeamId": "94c71823-f386-4983-bf66-05a482a45cff",
+      "createdAt": "2026-10-15T15:59:46.218Z",
+      "updatedAt": "2026-10-15T16:00:53.740Z",
+      "teamPlayer": {
+        "id": "c6e588d3-ba28-4e9d-9fd4-dd20660fa8ad",
+        "teamId": "074e1804-93a6-4b0d-9274-5e91923c814c",
+        "playerId": "d396cc78-b23b-4442-8a17-993f4d5f0c90",
+        "price": 100,
+        "isIcon": false,
+        "acquiredAt": "2026-10-15T16:00:53.737Z"
       }
     }
   ],
@@ -301,11 +349,11 @@
       "secondaryColor": "#1E40AF",
       "logoText": "RCB",
       "totalPurse": 15000,
-      "remainingPurse": 5200,
+      "remainingPurse": 5000,
       "maxSquadSize": 14,
       "maxOverseas": 4,
       "createdAt": "2026-10-13T16:30:34.464Z",
-      "updatedAt": "2026-10-13T16:38:05.839Z",
+      "updatedAt": "2026-10-15T16:00:53.726Z",
       "squad": [
         {
           "id": "82eed1a6-6577-4a85-9d30-165e760fdcd0",
@@ -330,6 +378,22 @@
           "price": 500,
           "isIcon": false,
           "acquiredAt": "2026-10-13T16:38:05.845Z"
+        },
+        {
+          "id": "f2c18a8f-dd09-4392-bc0e-66f747d8076a",
+          "teamId": "074e1804-93a6-4b0d-9274-5e91923c814c",
+          "playerId": "886c921e-7e14-49da-bdeb-2b2a4951bdce",
+          "price": 100,
+          "isIcon": false,
+          "acquiredAt": "2026-10-13T17:31:10.462Z"
+        },
+        {
+          "id": "c6e588d3-ba28-4e9d-9fd4-dd20660fa8ad",
+          "teamId": "074e1804-93a6-4b0d-9274-5e91923c814c",
+          "playerId": "d396cc78-b23b-4442-8a17-993f4d5f0c90",
+          "price": 100,
+          "isIcon": false,
+          "acquiredAt": "2026-10-15T16:00:53.737Z"
         }
       ]
     }
@@ -374,6 +438,22 @@
       "price": 500,
       "isIcon": false,
       "acquiredAt": "2026-10-13T16:38:05.845Z"
+    },
+    {
+      "id": "f2c18a8f-dd09-4392-bc0e-66f747d8076a",
+      "teamId": "074e1804-93a6-4b0d-9274-5e91923c814c",
+      "playerId": "886c921e-7e14-49da-bdeb-2b2a4951bdce",
+      "price": 100,
+      "isIcon": false,
+      "acquiredAt": "2026-10-13T17:31:10.462Z"
+    },
+    {
+      "id": "c6e588d3-ba28-4e9d-9fd4-dd20660fa8ad",
+      "teamId": "074e1804-93a6-4b0d-9274-5e91923c814c",
+      "playerId": "d396cc78-b23b-4442-8a17-993f4d5f0c90",
+      "price": 100,
+      "isIcon": false,
+      "acquiredAt": "2026-10-15T16:00:53.737Z"
     }
   ],
   "users": [
@@ -427,7 +507,7 @@
       "id": "b72d9210-89d7-49fc-810a-7897fcb6c0ff",
       "name": "Premier Cricket Tournament Mega Auction 2026",
       "status": "ACTIVE",
-      "currentRound": 1,
+      "currentRound": 2,
       "defaultTimerSec": 15,
       "autoSell": true,
       "timerEnabled": true,
@@ -435,15 +515,15 @@
       "defaultSquadLimit": 14,
       "iconPlayerPrice": 2500,
       "defaultBasePrice": 100,
-      "activePlayerId": null,
-      "activePlayerPrice": 0,
-      "highestBidTeamId": null,
+      "activePlayerId": "23c016cb-47c8-44dd-ba17-b8815c9e0b6b",
+      "activePlayerPrice": 200,
+      "highestBidTeamId": "b7c37daf-6331-40bf-8fc6-6305a97d9b4d",
       "timerSecondsLeft": null,
       "timerExpiresAt": null,
       "startedAt": "2026-10-13T16:34:37.143Z",
-      "endedAt": "2026-10-13T16:38:10.439Z",
+      "endedAt": "2026-10-15T16:00:58.508Z",
       "createdAt": "2026-10-11T15:19:04.061Z",
-      "updatedAt": "2026-10-13T17:05:05.156Z"
+      "updatedAt": "2026-10-15T16:09:11.792Z"
     }
   ],
   "auctionPlayers": [
@@ -526,16 +606,46 @@
       "id": "2e22923f-f589-4f18-b858-fb488947bc97",
       "auctionId": "b72d9210-89d7-49fc-810a-7897fcb6c0ff",
       "playerId": "886c921e-7e14-49da-bdeb-2b2a4951bdce",
-      "status": "UNSOLD",
+      "status": "SOLD",
       "round": 1,
       "orderIndex": 6,
       "basePrice": 100,
-      "finalPrice": null,
-      "winningTeamId": null,
+      "finalPrice": 100,
+      "winningTeamId": "074e1804-93a6-4b0d-9274-5e91923c814c",
       "startedAt": "2026-10-13T16:35:59.179Z",
-      "soldAt": null,
+      "soldAt": "2026-10-13T17:31:10.469Z",
       "createdAt": "2026-10-13T16:34:33.956Z",
-      "updatedAt": "2026-10-13T16:36:14.355Z"
+      "updatedAt": "2026-10-13T17:31:10.470Z"
+    },
+    {
+      "id": "1f013d1d-5a4d-4de0-a63d-43c1189b6375",
+      "auctionId": "b72d9210-89d7-49fc-810a-7897fcb6c0ff",
+      "playerId": "886c921e-7e14-49da-bdeb-2b2a4951bdce",
+      "status": "SOLD",
+      "round": 2,
+      "orderIndex": 1,
+      "basePrice": 100,
+      "finalPrice": 100,
+      "winningTeamId": "074e1804-93a6-4b0d-9274-5e91923c814c",
+      "startedAt": "2026-10-13T17:30:57.148Z",
+      "soldAt": "2026-10-13T17:31:10.469Z",
+      "createdAt": "2026-10-13T17:30:57.087Z",
+      "updatedAt": "2026-10-13T17:31:10.470Z"
+    },
+    {
+      "id": "baecac08-65a3-458a-a537-e455c6f836b7",
+      "auctionId": "b72d9210-89d7-49fc-810a-7897fcb6c0ff",
+      "playerId": "d396cc78-b23b-4442-8a17-993f4d5f0c90",
+      "status": "SOLD",
+      "round": 1,
+      "orderIndex": 8,
+      "basePrice": 100,
+      "finalPrice": 100,
+      "winningTeamId": "074e1804-93a6-4b0d-9274-5e91923c814c",
+      "startedAt": "2026-10-15T16:00:47.951Z",
+      "soldAt": "2026-10-15T16:00:53.740Z",
+      "createdAt": "2026-10-15T15:59:46.258Z",
+      "updatedAt": "2026-10-15T16:00:53.745Z"
     }
   ],
   "bids": []

@@ -13,6 +13,7 @@ import {
   skipPlayer,
   reauctionUnsold,
   resetAuction,
+  shuffleAuctionPool,
   getAuctionHistory,
   getAuctionResults,
   updateAuctionSettings,
@@ -43,6 +44,7 @@ router.post('/sell', authenticate, authorizeRole(['ADMIN']), sellPlayer);
 router.post('/unsold', authenticate, authorizeRole(['ADMIN']), markUnsold);
 router.post('/skip', authenticate, authorizeRole(['ADMIN']), skipPlayer);
 router.post('/reauction', authenticate, authorizeRole(['ADMIN']), reauctionUnsold);
+router.post('/shuffle', authenticate, authorizeRole(['ADMIN']), shuffleAuctionPool);
 router.post('/reset', authenticate, authorizeRole(['ADMIN']), resetAuction);
 router.post('/clear-all', authenticate, authorizeRole(['ADMIN']), clearAllTournamentData);
 router.post('/settings', authenticate, authorizeRole(['ADMIN']), updateAuctionSettings);
