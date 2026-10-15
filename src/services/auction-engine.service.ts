@@ -189,7 +189,9 @@ export class AuctionEngine {
       });
     }
 
-    this.startTimer();
+    if (auction.timerEnabled !== false) {
+      this.startTimer();
+    }
 
     const state = await this.getAuctionState();
     this.broadcast('auction:started', state);
@@ -237,7 +239,9 @@ export class AuctionEngine {
       });
     }
 
-    this.startTimer();
+    if (auction && auction.timerEnabled !== false) {
+      this.startTimer();
+    }
     const state = await this.getAuctionState();
     this.broadcast('auction:resumed', state);
     return state;
@@ -547,7 +551,7 @@ export class AuctionEngine {
         });
 
         return { newBid, updatedAuction };
-      });
+      }, { maxWait: 15000, timeout: 30000 });
 
       // Reset timer to default on every valid bid if timer is enabled
       const currentAuction = await this.prisma.auction.findFirst({ orderBy: { createdAt: 'desc' } });
@@ -695,7 +699,7 @@ export class AuctionEngine {
           }),
         },
       });
-    });
+    }, { maxWait: 15000, timeout: 30000 });
 
     const soldData = {
       player,
@@ -711,14 +715,16 @@ export class AuctionEngine {
       state,
     });
 
-    // Automatically transition to next player after 4.5 seconds broadcast pause
-    this.autoNextTimeout = setTimeout(async () => {
-      try {
-        await this.nextPlayer();
-      } catch (err) {
-        console.error('Error auto-advancing next player:', err);
-      }
-    }, 4500);
+    // Automatically transition to next player after 4.5 seconds broadcast pause (if timer is enabled)
+    if (auction.timerEnabled !== false) {
+      this.autoNextTimeout = setTimeout(async () => {
+        try {
+          await this.nextPlayer();
+        } catch (err) {
+          console.error('Error auto-advancing next player:', err);
+        }
+      }, 4500);
+    }
 
     return { success: true, ...soldData, state };
   }
@@ -760,7 +766,7 @@ export class AuctionEngine {
           metadata: JSON.stringify({ playerId: player.id, playerName: player.name }),
         },
       });
-    });
+    }, { maxWait: 15000, timeout: 30000 });
 
     const unsoldData = {
       player,
@@ -774,14 +780,16 @@ export class AuctionEngine {
       state,
     });
 
-    // Automatically advance after 3.5 seconds
-    this.autoNextTimeout = setTimeout(async () => {
-      try {
-        await this.nextPlayer();
-      } catch (err) {
-        console.error('Error auto-advancing next player:', err);
-      }
-    }, 3500);
+    // Automatically advance after 3.5 seconds (if timer is enabled)
+    if (auction.timerEnabled !== false) {
+      this.autoNextTimeout = setTimeout(async () => {
+        try {
+          await this.nextPlayer();
+        } catch (err) {
+          console.error('Error auto-advancing next player:', err);
+        }
+      }, 3500);
+    }
 
     return { success: true, ...unsoldData, state };
   }
@@ -1135,10 +1143,14 @@ export class AuctionEngine {
     }, 1000);
   }
 
-  private stopTimer() {
+  public stopTimer() {
     if (this.timerInterval) {
       clearInterval(this.timerInterval);
       this.timerInterval = null;
+    }
+    if (this.autoNextTimeout) {
+      clearTimeout(this.autoNextTimeout);
+      this.autoNextTimeout = null;
     }
   }
 }

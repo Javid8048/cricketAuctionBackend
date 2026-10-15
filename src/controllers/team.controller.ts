@@ -447,7 +447,7 @@ export async function assignIconPlayer(req: Request, res: Response) {
           },
         });
       }
-    });
+    }, { maxWait: 15000, timeout: 30000 });
 
     saveDatabaseSnapshot().catch(() => {});
 
@@ -515,7 +515,7 @@ export async function removeIconPlayer(req: Request, res: Response) {
           },
         });
       }
-    });
+    }, { maxWait: 15000, timeout: 30000 });
 
     saveDatabaseSnapshot().catch(() => {});
 
