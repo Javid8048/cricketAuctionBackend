@@ -129,6 +129,11 @@ export class AuctionEngine {
 
     if (!auction) return null;
 
+    // Safety guard: Auction cannot be ACTIVE if there is no active player on the block
+    if (!auction.activePlayerId && auction.status === 'ACTIVE') {
+      auction.status = 'PAUSED';
+    }
+
     if (auction.timerEnabled !== undefined && auction.timerEnabled !== null) {
       this.timerEnabled = Boolean(auction.timerEnabled);
     }
@@ -390,24 +395,23 @@ export class AuctionEngine {
       where: { auctionId: auction.id, playerId: playerId },
     });
 
-    // Update auction to ACTIVE status so teams can bid immediately
+    // Update auction to PAUSED status so teams cannot bid until admin clicks Start
     await this.prisma.auction.update({
       where: { id: auction.id },
       data: {
-        status: 'ACTIVE',
+        status: 'PAUSED',
         activePlayerId: playerId,
-        activePlayerPrice: player.basePrice,
+        activePlayerPrice: player.basePrice || 100,
         highestBidTeamId: null,
       },
     });
 
     this.secondsLeft = auction.defaultTimerSec || 10;
-    if (auction.timerEnabled !== false) {
-      this.startTimer(this.secondsLeft);
-    }
+    // Bidding timer must not start until admin clicks Start
+    this.invalidateCache();
     const state = await this.getAuctionState();
     this.broadcast('auction:player', state);
-    this.broadcast('auction:resumed', state);
+    this.broadcast('auction:paused', state);
     this.broadcast('auction:players_updated', state);
     return state;
   }
@@ -872,8 +876,8 @@ export class AuctionEngine {
       throw new Error('Franchise not found.');
     }
 
-    if (isNaN(amount) || amount <= 100 || amount >= 2500) {
-      throw new Error('Assignment price must be greater than ₹100 and less than ₹2,500.');
+    if (isNaN(amount) || amount < 100 || amount > 2500) {
+      throw new Error('Assignment price must be between ₹100 and ₹2,500.');
     }
 
     if (team.remainingPurse < amount) {

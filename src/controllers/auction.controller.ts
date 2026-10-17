@@ -113,8 +113,8 @@ export async function manuallyAssignPlayer(req: AuthenticatedRequest, res: Respo
       return res.status(400).json({ error: 'Player ID, Franchise ID, and amount are required.' });
     }
     const numericAmount = Number(amount);
-    if (isNaN(numericAmount) || numericAmount <= 100 || numericAmount >= 2500) {
-      return res.status(400).json({ error: 'Assignment price must be greater than ₹100 and less than ₹2,500.' });
+    if (isNaN(numericAmount) || numericAmount < 100 || numericAmount > 2500) {
+      return res.status(400).json({ error: 'Assignment price must be between ₹100 and ₹2,500.' });
     }
     const result = await auctionEngine.manuallyAssignPlayer(playerId, teamId, numericAmount);
     res.json(result);
