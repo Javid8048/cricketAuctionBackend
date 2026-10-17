@@ -32,6 +32,18 @@ export class AuctionEngine {
   }
 
   /**
+   * Broadcast full auction state (including all players & teams) to all connected clients
+   */
+  public async broadcastState(event: string = 'auction:init') {
+    const state = await this.getAuctionState();
+    if (state) {
+      this.broadcast(event, state);
+      this.broadcast('auction:players_updated', { players: state.players });
+    }
+    return state;
+  }
+
+  /**
    * Get current state of active auction with loaded player, bids, and teams
    */
   public async getAuctionState() {
@@ -84,9 +96,12 @@ export class AuctionEngine {
       const bowlers = t.squad.filter((sp) => sp.player.role === 'Bowler').length;
       const allRounders = t.squad.filter((sp) => sp.player.role === 'All-Rounder').length;
       const wicketkeepers = t.squad.filter((sp) => sp.player.role === 'Wicketkeeper').length;
+      const spent = t.squad.reduce((sum, sp) => sum + (sp.price || 0), 0);
+      const safeRemaining = t.remainingPurse > t.totalPurse ? Math.max(0, t.totalPurse - spent) : t.remainingPurse;
 
       return {
         ...t,
+        remainingPurse: safeRemaining,
         squadSize: t.squad.length,
         overseasCount,
         batters,
@@ -94,6 +109,17 @@ export class AuctionEngine {
         allRounders,
         wicketkeepers,
       };
+    });
+
+    const allPlayers = await this.prisma.player.findMany({
+      orderBy: { sNo: 'asc' },
+      include: {
+        teamPlayer: {
+          include: {
+            team: true,
+          },
+        },
+      },
     });
 
     return {
@@ -105,6 +131,7 @@ export class AuctionEngine {
       highestBidTeam,
       currentBid: auction.activePlayerPrice || (activePlayer ? activePlayer.basePrice : 0),
       teams: formattedTeams,
+      players: allPlayers,
       recentBids: auction.bids,
       minIncrement: auction.activePlayerPrice
         ? getMinBidIncrement(auction.activePlayerPrice)
@@ -651,6 +678,164 @@ export class AuctionEngine {
   }
 
   /**
+   * Admin assigns a player manually to a franchise
+   * Deducts amount from team purse, adds player to squad, marks as SOLD
+   */
+  public async manuallyAssignPlayer(playerId: string, teamId: string, amount: number) {
+    this.stopTimer();
+    if (this.autoNextTimeout) {
+      clearTimeout(this.autoNextTimeout);
+      this.autoNextTimeout = null;
+    }
+
+    const auction = await this.prisma.auction.findFirst({
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const player = await this.prisma.player.findUnique({
+      where: { id: playerId },
+    });
+
+    if (!player) {
+      throw new Error('Player not found.');
+    }
+
+    const team = await this.prisma.team.findUnique({
+      where: { id: teamId },
+      include: {
+        squad: true,
+      },
+    });
+
+    if (!team) {
+      throw new Error('Franchise not found.');
+    }
+
+    if (isNaN(amount) || amount <= 100 || amount >= 2500) {
+      throw new Error('Assignment price must be greater than ₹100 and less than ₹2,500.');
+    }
+
+    if (team.remainingPurse < amount) {
+      throw new Error(
+        `Insufficient purse! ${team.name} has only ${formatRupees(team.remainingPurse)} remaining, but manual assignment requires ${formatRupees(amount)}.`
+      );
+    }
+
+    if (team.squad.length >= team.maxSquadSize) {
+      throw new Error(
+        `Squad limit reached! ${team.name} already has ${team.squad.length}/${team.maxSquadSize} players.`
+      );
+    }
+
+    // Check if player is already assigned
+    const existingSquad = await this.prisma.teamPlayer.findFirst({
+      where: { playerId },
+      include: { team: true },
+    });
+    if (existingSquad) {
+      throw new Error(
+        `${player.name} is already in ${existingSquad.team.name}'s squad! Please remove them first.`
+      );
+    }
+
+    // Perform atomic transaction
+    await this.prisma.$transaction(async (tx) => {
+      // 1. Deduct purse from franchise
+      await tx.team.update({
+        where: { id: teamId },
+        data: {
+          remainingPurse: { decrement: amount },
+        },
+      });
+
+      // 2. Add to team squad
+      await tx.teamPlayer.create({
+        data: {
+          teamId,
+          playerId,
+          price: amount,
+          isIcon: false,
+        },
+      });
+
+      // 3. Mark player as SOLD
+      await tx.player.update({
+        where: { id: playerId },
+        data: {
+          status: 'SOLD',
+          currentPrice: amount,
+        },
+      });
+
+      // 4. Update auction player if active
+      if (auction) {
+        // If this player was active in auction, clear active player on auction
+        if (auction.activePlayerId === playerId) {
+          await tx.auction.update({
+            where: { id: auction.id },
+            data: {
+              activePlayerId: null,
+              activePlayerPrice: null,
+              highestBidTeamId: null,
+            },
+          });
+        }
+
+        await tx.auctionPlayer.updateMany({
+          where: {
+            auctionId: auction.id,
+            playerId: playerId,
+          },
+          data: {
+            status: 'SOLD',
+            finalPrice: amount,
+            winningTeamId: teamId,
+            soldAt: new Date(),
+          },
+        });
+
+        // 5. Create auction event
+        await tx.auctionEvent.create({
+          data: {
+            auctionId: auction.id,
+            type: 'SOLD',
+            message: `MANUAL ASSIGNMENT! ${player.name} assigned to ${team.name} for ${formatRupees(amount)} (-${formatRupees(amount)} from purse).`,
+            metadata: JSON.stringify({
+              playerId: player.id,
+              playerName: player.name,
+              teamId: team.id,
+              teamName: team.name,
+              amount: amount,
+              isManual: true,
+            }),
+          },
+        });
+      }
+    });
+
+    const soldData = {
+      player: { ...player, status: 'SOLD', currentPrice: amount },
+      winningTeam: { ...team, remainingPurse: team.remainingPurse - amount },
+      finalPrice: amount,
+      formattedPrice: formatRupees(amount),
+      isManual: true,
+    };
+
+    const state = await this.getAuctionState();
+    this.broadcast('auction:sold', {
+      ...soldData,
+      state,
+    });
+
+    return {
+      success: true,
+      message: `${player.name} manually assigned to ${team.name} for ${formatRupees(amount)}!`,
+      ...soldData,
+      state,
+    };
+  }
+
+  /**
    * Mark current player as UNSOLD
    */
   public async markUnsold() {
@@ -792,12 +977,14 @@ export class AuctionEngine {
     await this.prisma.auctionEvent.deleteMany();
     await this.prisma.auctionPlayer.deleteMany();
 
-    // 2. Reset team purses
-    await this.prisma.team.updateMany({
-      data: {
-        remainingPurse: 1000000000,
-      },
-    });
+    // 2. Reset team purses to their total purse
+    const allTeams = await this.prisma.team.findMany();
+    for (const t of allTeams) {
+      await this.prisma.team.update({
+        where: { id: t.id },
+        data: { remainingPurse: t.totalPurse },
+      });
+    }
 
     // 3. Reset player statuses
     await this.prisma.player.updateMany({

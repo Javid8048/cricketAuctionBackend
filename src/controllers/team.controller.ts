@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { formatRupees } from '../utils/currency';
+import { auctionEngine } from './auction.controller';
 
 const prisma = new PrismaClient();
 
@@ -25,10 +26,13 @@ export async function getTeams(req: Request, res: Response) {
       const allRounders = t.squad.filter((sp) => sp.player.role === 'All-Rounder').length;
       const wicketkeepers = t.squad.filter((sp) => sp.player.role === 'Wicketkeeper').length;
       const iconPlayersCount = t.squad.filter((sp) => sp.isIcon || sp.player.isIcon).length;
-      const totalSpent = t.totalPurse - t.remainingPurse;
+      const spentOnSquad = t.squad.reduce((sum, sp) => sum + (sp.price || 0), 0);
+      const safeRemaining = t.remainingPurse > t.totalPurse ? Math.max(0, t.totalPurse - spentOnSquad) : t.remainingPurse;
+      const totalSpent = Math.max(0, t.totalPurse - safeRemaining);
 
       return {
         ...t,
+        remainingPurse: safeRemaining,
         squadSize: t.squad.length,
         iconPlayersCount,
         overseasCount,
@@ -78,12 +82,15 @@ export async function getTeamById(req: Request, res: Response) {
     const allRounders = team.squad.filter((sp) => sp.player.role === 'All-Rounder').length;
     const wicketkeepers = team.squad.filter((sp) => sp.player.role === 'Wicketkeeper').length;
     const iconPlayersCount = team.squad.filter((sp) => sp.isIcon || sp.player.isIcon).length;
-    const totalSpent = team.totalPurse - team.remainingPurse;
+    const spentOnSquad = team.squad.reduce((sum, sp) => sum + (sp.price || 0), 0);
+    const safeRemaining = team.remainingPurse > team.totalPurse ? Math.max(0, team.totalPurse - spentOnSquad) : team.remainingPurse;
+    const totalSpent = Math.max(0, team.totalPurse - safeRemaining);
     const avgPlayerPrice = team.squad.length > 0 ? totalSpent / team.squad.length : 0;
     const highestPurchase = team.squad.reduce((max, curr) => (curr.price > max ? curr.price : max), 0);
 
     res.json({
       ...team,
+      remainingPurse: safeRemaining,
       squadSize: team.squad.length,
       iconPlayersCount,
       overseasCount,
@@ -254,13 +261,128 @@ export async function deleteTeam(req: Request, res: Response) {
   try {
     const { id } = req.params;
 
-    await prisma.team.delete({
+    const team = await prisma.team.findUnique({
       where: { id },
+      include: {
+        squad: true,
+      },
     });
 
-    res.json({ message: 'Team deleted successfully.' });
+    if (!team) {
+      return res.status(404).json({ error: 'Team not found.' });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // 1. Release all players in this team's squad back to UPCOMING
+      const playerIds = team.squad.map((sp) => sp.playerId);
+      if (playerIds.length > 0) {
+        await tx.player.updateMany({
+          where: { id: { in: playerIds } },
+          data: {
+            status: 'UPCOMING',
+            currentPrice: null,
+          },
+        });
+      }
+
+      // 2. Delete team player links
+      await tx.teamPlayer.deleteMany({
+        where: { teamId: id },
+      });
+
+      // 3. Delete bids placed by this team
+      await tx.bid.deleteMany({
+        where: { teamId: id },
+      });
+
+      // 4. Clear winningTeamId on AuctionPlayer
+      await tx.auctionPlayer.updateMany({
+        where: { winningTeamId: id },
+        data: { winningTeamId: null },
+      });
+
+      // 5. If current auction has this team as highest bidder, reset highestBidTeamId
+      await tx.auction.updateMany({
+        where: { highestBidTeamId: id },
+        data: { highestBidTeamId: null },
+      });
+
+      // 6. Delete linked franchise user account
+      await tx.user.deleteMany({
+        where: { teamId: id },
+      });
+
+      // 7. Finally delete the team
+      await tx.team.delete({
+        where: { id },
+      });
+    });
+
+    try {
+      await auctionEngine.broadcastState();
+    } catch (e) {}
+
+    res.json({ success: true, message: `Team ${team.name} deleted successfully.` });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to delete team.' });
+  }
+}
+
+export async function deleteAllTeams(req: Request, res: Response) {
+  try {
+    const teams = await prisma.team.findMany({
+      include: { squad: true },
+    });
+
+    if (teams.length === 0) {
+      return res.json({ success: true, message: 'No teams to delete.' });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // 1. Release all rostered players back to UPCOMING
+      await tx.player.updateMany({
+        where: { status: 'SOLD' },
+        data: {
+          status: 'UPCOMING',
+          currentPrice: null,
+        },
+      });
+
+      // 2. Delete all squad links
+      await tx.teamPlayer.deleteMany();
+
+      // 3. Delete all bids
+      await tx.bid.deleteMany();
+
+      // 4. Clear winningTeamId on AuctionPlayer
+      await tx.auctionPlayer.updateMany({
+        data: { winningTeamId: null },
+      });
+
+      // 5. Reset highest bidder on active auctions
+      await tx.auction.updateMany({
+        data: { highestBidTeamId: null },
+      });
+
+      // 6. Delete all franchise user accounts
+      await tx.user.deleteMany({
+        where: { role: 'TEAM' },
+      });
+
+      // 7. Delete all teams
+      await tx.team.deleteMany();
+    });
+
+    try {
+      await auctionEngine.broadcastState();
+    } catch (e) {}
+
+    res.json({
+      success: true,
+      message: `Successfully deleted all ${teams.length} teams. Players returned to draft pool.`,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to delete all teams.' });
   }
 }
 

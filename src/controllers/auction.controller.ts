@@ -106,6 +106,23 @@ export async function sellPlayer(req: AuthenticatedRequest, res: Response) {
   }
 }
 
+export async function manuallyAssignPlayer(req: AuthenticatedRequest, res: Response) {
+  try {
+    const { playerId, teamId, amount } = req.body;
+    if (!playerId || !teamId || amount === undefined) {
+      return res.status(400).json({ error: 'Player ID, Franchise ID, and amount are required.' });
+    }
+    const numericAmount = Number(amount);
+    if (isNaN(numericAmount) || numericAmount <= 100 || numericAmount >= 2500) {
+      return res.status(400).json({ error: 'Assignment price must be greater than ₹100 and less than ₹2,500.' });
+    }
+    const result = await auctionEngine.manuallyAssignPlayer(playerId, teamId, numericAmount);
+    res.json(result);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Failed to manually assign player.' });
+  }
+}
+
 export async function markUnsold(req: AuthenticatedRequest, res: Response) {
   try {
     const result = await auctionEngine.markUnsold();

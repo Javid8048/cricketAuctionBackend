@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
+import { auctionEngine } from './auction.controller';
 
 const prisma = new PrismaClient();
 
@@ -157,6 +158,12 @@ export async function registerPlayerPublic(req: Request, res: Response) {
       });
     }
 
+    try {
+      await auctionEngine.broadcastState();
+    } catch (e) {
+      console.warn('Socket broadcast warning:', e);
+    }
+
     res.status(201).json({
       success: true,
       message: `Registration successful! Your S.No is #${sNo}`,
@@ -225,6 +232,10 @@ export async function createPlayer(req: Request, res: Response) {
       });
     }
 
+    try {
+      await auctionEngine.broadcastState();
+    } catch (e) {}
+
     res.status(201).json(player);
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to create player.' });
@@ -244,6 +255,10 @@ export async function updatePlayer(req: Request, res: Response) {
       },
     });
 
+    try {
+      await auctionEngine.broadcastState();
+    } catch (e) {}
+
     res.json(player);
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to update player.' });
@@ -257,6 +272,10 @@ export async function deletePlayer(req: Request, res: Response) {
     await prisma.player.delete({
       where: { id },
     });
+
+    try {
+      await auctionEngine.broadcastState();
+    } catch (e) {}
 
     res.json({ message: 'Player removed successfully.' });
   } catch (error: any) {

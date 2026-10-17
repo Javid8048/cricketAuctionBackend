@@ -9,6 +9,7 @@ import {
   nextPlayer,
   placeBid,
   sellPlayer,
+  manuallyAssignPlayer,
   markUnsold,
   skipPlayer,
   reauctionUnsold,
@@ -40,6 +41,7 @@ router.post('/select', authenticate, authorizeRole(['ADMIN']), selectPlayer);
 router.post('/start-bidding', authenticate, authorizeRole(['ADMIN']), startBidding);
 router.post('/next', authenticate, authorizeRole(['ADMIN']), nextPlayer);
 router.post('/sell', authenticate, authorizeRole(['ADMIN']), sellPlayer);
+router.post('/assign-player', authenticate, authorizeRole(['ADMIN']), manuallyAssignPlayer);
 router.post('/unsold', authenticate, authorizeRole(['ADMIN']), markUnsold);
 router.post('/skip', authenticate, authorizeRole(['ADMIN']), skipPlayer);
 router.post('/reauction', authenticate, authorizeRole(['ADMIN']), reauctionUnsold);

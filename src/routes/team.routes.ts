@@ -5,6 +5,7 @@ import {
   createTeam,
   updateTeam,
   deleteTeam,
+  deleteAllTeams,
   assignIconPlayer,
   removeIconPlayer,
   getFranchiseCredentials,
@@ -24,6 +25,7 @@ router.get('/:id', getTeamById);
 
 // Admin operations
 router.post('/', authenticate, authorizeRole(['ADMIN']), createTeam);
+router.delete('/all', authenticate, authorizeRole(['ADMIN']), deleteAllTeams);
 router.put('/:id', authenticate, authorizeRole(['ADMIN', 'TEAM']), updateTeam);
 router.delete('/:id', authenticate, authorizeRole(['ADMIN']), deleteTeam);
 
