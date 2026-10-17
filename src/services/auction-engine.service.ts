@@ -7,6 +7,9 @@ export class AuctionEngine {
   private io: SocketIOServer | null = null;
   private timerInterval: NodeJS.Timeout | null = null;
   private secondsLeft: number = 10;
+  private defaultTimerSec: number = 10;
+  private timerEnabled: boolean = true;
+  private autoSell: boolean = true;
   private isProcessingBid: boolean = false;
   private autoNextTimeout: NodeJS.Timeout | null = null;
 
@@ -125,6 +128,16 @@ export class AuctionEngine {
     ]);
 
     if (!auction) return null;
+
+    if (auction.timerEnabled !== undefined && auction.timerEnabled !== null) {
+      this.timerEnabled = Boolean(auction.timerEnabled);
+    }
+    if (auction.autoSell !== undefined && auction.autoSell !== null) {
+      this.autoSell = Boolean(auction.autoSell);
+    }
+    if (auction.defaultTimerSec) {
+      this.defaultTimerSec = Number(auction.defaultTimerSec);
+    }
 
     const formattedTeams = fetchedTeams.map((t) => {
       const overseasCount = t.squad.filter((sp) => sp.player.isOverseas).length;
@@ -254,8 +267,9 @@ export class AuctionEngine {
       });
     }
 
+    this.secondsLeft = auction.defaultTimerSec || 10;
     if (auction.timerEnabled !== false) {
-      this.startTimer();
+      this.startTimer(this.secondsLeft);
     }
 
     this.invalidateCache();
@@ -307,7 +321,7 @@ export class AuctionEngine {
     }
 
     if (auction && auction.timerEnabled !== false) {
-      this.startTimer();
+      this.startTimer(this.secondsLeft || auction.defaultTimerSec || 10);
     }
     this.invalidateCache();
     const state = await this.getAuctionState();
@@ -389,7 +403,7 @@ export class AuctionEngine {
 
     this.secondsLeft = auction.defaultTimerSec || 10;
     if (auction.timerEnabled !== false) {
-      this.startTimer();
+      this.startTimer(this.secondsLeft);
     }
     const state = await this.getAuctionState();
     this.broadcast('auction:player', state);
@@ -415,7 +429,7 @@ export class AuctionEngine {
     });
 
     this.secondsLeft = auction.defaultTimerSec || 10;
-    this.startTimer();
+    this.startTimer(this.secondsLeft);
 
     const state = await this.getAuctionState();
     this.broadcast('auction:resumed', state);
@@ -626,7 +640,7 @@ export class AuctionEngine {
       // Reset timer to default on every valid bid if timer is enabled
       if (auction.timerEnabled !== false) {
         this.secondsLeft = auction.defaultTimerSec || 10;
-        this.startTimer();
+        this.startTimer(this.secondsLeft);
       }
 
       // Fast update in-memory cached state directly (avoiding 4-8 second DB query)
@@ -797,6 +811,12 @@ export class AuctionEngine {
       formattedPrice: formatRupees(winningPrice),
       isManualSale: Boolean(manualTeamId),
     };
+
+    // Instant emission: Don't wait for full state DB queries so gavel & celebration trigger with 0 delay!
+    this.broadcast('auction:sold', {
+      ...soldData,
+      state: this.cachedFullAuctionState || null,
+    });
 
     const state = await this.getAuctionState();
     this.broadcast('auction:sold', {
@@ -1022,6 +1042,12 @@ export class AuctionEngine {
       basePrice: player.basePrice,
       formattedBasePrice: formatRupees(player.basePrice),
     };
+
+    // Instant emission: Don't wait for full state DB queries so buzzer & alert trigger with 0 delay!
+    this.broadcast('auction:unsold', {
+      ...unsoldData,
+      state: this.cachedFullAuctionState || null,
+    });
 
     const state = await this.getAuctionState();
     this.broadcast('auction:unsold', {
@@ -1307,7 +1333,14 @@ export class AuctionEngine {
     }
 
     if (settings.defaultTimerSec) {
+      this.defaultTimerSec = Number(settings.defaultTimerSec);
       this.secondsLeft = Number(settings.defaultTimerSec);
+    }
+    if (settings.timerEnabled !== undefined) {
+      this.timerEnabled = Boolean(settings.timerEnabled);
+    }
+    if (settings.autoSell !== undefined) {
+      this.autoSell = Boolean(settings.autoSell);
     }
 
     if (settings.timerEnabled === false) {
@@ -1320,7 +1353,7 @@ export class AuctionEngine {
     } else if (settings.timerEnabled === true) {
       if (updated.status === 'ACTIVE' && updated.activePlayerId) {
         this.secondsLeft = updated.defaultTimerSec || 10;
-        this.startTimer();
+        this.startTimer(this.secondsLeft);
       }
     }
 
@@ -1332,20 +1365,21 @@ export class AuctionEngine {
 
   /**
    * Server-controlled bid timer with autoSell toggle and enable/disable
+   * Synchronous start with instant 0ms tick broadcast
    */
-  private async startTimer() {
+  public startTimer(overrideSeconds?: number) {
     if (this.timerInterval) {
       clearInterval(this.timerInterval);
       this.timerInterval = null;
     }
 
-    const auction = await this.prisma.auction.findFirst({
-      orderBy: { createdAt: 'desc' },
-    });
+    if (overrideSeconds !== undefined && overrideSeconds > 0) {
+      this.secondsLeft = overrideSeconds;
+    } else if (this.secondsLeft <= 0) {
+      this.secondsLeft = this.defaultTimerSec || 10;
+    }
 
-    if (!auction) return;
-
-    if (auction.timerEnabled === false) {
+    if (!this.timerEnabled) {
       this.broadcast('auction:timer', {
         secondsLeft: null,
         timerEnabled: false,
@@ -1353,6 +1387,14 @@ export class AuctionEngine {
       });
       return;
     }
+
+    // Immediately emit initial tick so clients don't wait 1000ms for first tick
+    this.broadcast('auction:timer', {
+      secondsLeft: this.secondsLeft,
+      timerEnabled: true,
+      warning: this.secondsLeft <= 5 && this.secondsLeft > 0,
+      urgent: this.secondsLeft <= 3 && this.secondsLeft > 0,
+    });
 
     this.timerInterval = setInterval(async () => {
       this.secondsLeft -= 1;
@@ -1368,28 +1410,38 @@ export class AuctionEngine {
       if (this.secondsLeft <= 0) {
         this.stopTimer();
 
-        // Check if there is a highest bidder
-        const currentAuction = await this.prisma.auction.findFirst({
-          orderBy: { createdAt: 'desc' },
-        });
+        if (this.autoSell) {
+          // Check cached state first for sub-millisecond response
+          const cached = this.cachedFullAuctionState;
+          const activePlayerId = cached?.auction?.activePlayerId;
+          const highestBidTeamId = cached?.auction?.highestBidTeamId;
 
-        if (currentAuction && currentAuction.activePlayerId) {
-          if (currentAuction.autoSell) {
-            if (currentAuction.highestBidTeamId) {
-              console.log(`[Timer expired - Auto-Sell]: Selling player ${currentAuction.activePlayerId} to ${currentAuction.highestBidTeamId}`);
+          if (activePlayerId) {
+            if (highestBidTeamId) {
+              console.log(`[Timer expired - Auto-Sell]: Selling player ${activePlayerId} to ${highestBidTeamId}`);
               await this.sellPlayer();
             } else {
-              console.log(`[Timer expired - Auto-Unsold]: No bids placed, player ${currentAuction.activePlayerId} is UNSOLD`);
+              console.log(`[Timer expired - Auto-Unsold]: No bids placed, player ${activePlayerId} is UNSOLD`);
               await this.markUnsold();
             }
           } else {
-            console.log(`[Timer expired - Manual Mode]: Awaiting Admin confirmation to sell player ${currentAuction.activePlayerId}`);
-            this.broadcast('auction:timer_ended_manual', {
-              message: 'Timer reached 0! Awaiting Admin confirmation to Sell or Mark Unsold.',
-              highestBidTeamId: currentAuction.highestBidTeamId,
-              activePlayerPrice: currentAuction.activePlayerPrice,
+            // Check DB fallback
+            const currentAuction = await this.prisma.auction.findFirst({
+              orderBy: { createdAt: 'desc' },
             });
+            if (currentAuction && currentAuction.activePlayerId) {
+              if (currentAuction.highestBidTeamId) {
+                await this.sellPlayer();
+              } else {
+                await this.markUnsold();
+              }
+            }
           }
+        } else {
+          console.log('[Timer expired - Manual Mode]: Awaiting Admin confirmation to sell player');
+          this.broadcast('auction:timer_ended_manual', {
+            message: 'Timer reached 0! Awaiting Admin confirmation to Sell or Mark Unsold.',
+          });
         }
       }
     }, 1000);
