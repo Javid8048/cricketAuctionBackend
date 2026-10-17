@@ -10,7 +10,7 @@ The real-time auction engine and REST API powering the **Cricket Auction Arena**
   - 25-player maximum squad size enforcement.
   - 8 overseas maximum quota enforcement.
   - Minimum bid increments per valuation bracket.
-- **Pre-Seeded Data**: 8 fictional franchises, 50 detailed cricketers with T20 career statistics, and default demo accounts.
+- **Pre-Seeded Data**: 8 fictional teams, 50 detailed cricketers with T20 career statistics, and default demo accounts.
 - **Role-Based Access Control**: Admin, Team Manager, and Spectator roles with JWT authentication.
 
 ## 🛠️ Tech Stack

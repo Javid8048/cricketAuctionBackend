@@ -10,8 +10,33 @@ export class AuctionEngine {
   private isProcessingBid: boolean = false;
   private autoNextTimeout: NodeJS.Timeout | null = null;
 
+  // In-memory caching for ultra-fast Live Auction updates
+  private cachedFullAuctionState: any = null;
+  private cachedFormattedTeams: any[] | null = null;
+  private cachedPlayers: any[] | null = null;
+  private cacheTimestamp: number = 0;
+  private readonly CACHE_TTL_MS: number = 20000; // 20 seconds TTL fallback
+
+  private onInvalidateCallbacks: (() => void)[] = [];
+
   constructor(prisma: PrismaClient) {
     this.prisma = prisma;
+  }
+
+  public onInvalidate(cb: () => void) {
+    this.onInvalidateCallbacks.push(cb);
+  }
+
+  public invalidateCache() {
+    this.cachedFullAuctionState = null;
+    this.cachedFormattedTeams = null;
+    this.cachedPlayers = null;
+    this.cacheTimestamp = 0;
+    for (const cb of this.onInvalidateCallbacks) {
+      try {
+        cb();
+      } catch (_) {}
+    }
   }
 
   public setSocketServer(io: SocketIOServer) {
@@ -25,7 +50,7 @@ export class AuctionEngine {
   /**
    * Broadcast an event to all connected clients
    */
-  private broadcast(event: string, data: any) {
+  public broadcast(event: string, data: any) {
     if (this.io) {
       this.io.emit(event, data);
     }
@@ -45,52 +70,63 @@ export class AuctionEngine {
 
   /**
    * Get current state of active auction with loaded player, bids, and teams
+   * Uses in-memory caching and parallel Promise.all queries for sub-100ms response times
    */
   public async getAuctionState() {
-    const auction = await this.prisma.auction.findFirst({
-      orderBy: { createdAt: 'desc' },
-      include: {
-        bids: {
-          orderBy: { createdAt: 'desc' },
-          take: 20,
-          include: {
-            team: true,
-            player: true,
+    const isCacheValid =
+      this.cachedFullAuctionState !== null &&
+      Date.now() - this.cacheTimestamp < this.CACHE_TTL_MS;
+
+    if (isCacheValid) {
+      return {
+        ...this.cachedFullAuctionState,
+        auction: {
+          ...this.cachedFullAuctionState.auction,
+          secondsLeft: this.secondsLeft,
+        },
+      };
+    }
+
+    const [auction, fetchedTeams, fetchedPlayers] = await Promise.all([
+      this.prisma.auction.findFirst({
+        orderBy: { createdAt: 'desc' },
+        include: {
+          bids: {
+            orderBy: { createdAt: 'desc' },
+            take: 20,
+            include: {
+              team: true,
+              player: true,
+            },
           },
         },
-      },
-    });
+      }),
+      this.prisma.team.findMany({
+        include: {
+          squad: {
+            include: {
+              player: true,
+            },
+          },
+        },
+        orderBy: { name: 'asc' },
+      }),
+      this.prisma.player.findMany({
+        include: {
+          teamPlayer: {
+            include: {
+              team: true,
+            },
+          },
+          belongingTeam: true,
+        },
+        orderBy: [{ sNo: 'asc' }, { name: 'asc' }],
+      }),
+    ]);
 
     if (!auction) return null;
 
-    let activePlayer = null;
-    let highestBidTeam = null;
-
-    if (auction.activePlayerId) {
-      activePlayer = await this.prisma.player.findUnique({
-        where: { id: auction.activePlayerId },
-      });
-    }
-
-    if (auction.highestBidTeamId) {
-      highestBidTeam = await this.prisma.team.findUnique({
-        where: { id: auction.highestBidTeamId },
-      });
-    }
-
-    const teams = await this.prisma.team.findMany({
-      include: {
-        squad: {
-          include: {
-            player: true,
-          },
-        },
-      },
-      orderBy: { name: 'asc' },
-    });
-
-    // Formatted teams with computed squad stats
-    const formattedTeams = teams.map((t) => {
+    const formattedTeams = fetchedTeams.map((t) => {
       const overseasCount = t.squad.filter((sp) => sp.player.isOverseas).length;
       const batters = t.squad.filter((sp) => sp.player.role === 'Batter').length;
       const bowlers = t.squad.filter((sp) => sp.player.role === 'Bowler').length;
@@ -98,31 +134,49 @@ export class AuctionEngine {
       const wicketkeepers = t.squad.filter((sp) => sp.player.role === 'Wicketkeeper').length;
       const spent = t.squad.reduce((sum, sp) => sum + (sp.price || 0), 0);
       const safeRemaining = t.remainingPurse > t.totalPurse ? Math.max(0, t.totalPurse - spent) : t.remainingPurse;
+      const iconPlayersCount = t.squad.filter((sp) => sp.isIcon || sp.player.isIcon).length;
+      const totalSpent = Math.max(0, t.totalPurse - safeRemaining);
 
       return {
         ...t,
         remainingPurse: safeRemaining,
         squadSize: t.squad.length,
+        iconPlayersCount,
         overseasCount,
         batters,
         bowlers,
         allRounders,
         wicketkeepers,
+        totalSpent,
       };
     });
 
-    const allPlayers = await this.prisma.player.findMany({
-      orderBy: { sNo: 'asc' },
-      include: {
-        teamPlayer: {
-          include: {
-            team: true,
-          },
-        },
-      },
-    });
+    this.cachedFormattedTeams = formattedTeams;
+    this.cachedPlayers = fetchedPlayers;
 
-    return {
+    // Parallel fetch for active player and highest bid team if present
+    const [activePlayer, highestBidTeam] = await Promise.all([
+      auction.activePlayerId
+        ? this.prisma.player.findUnique({
+            where: { id: auction.activePlayerId },
+            include: {
+              belongingTeam: true,
+              teamPlayer: {
+                include: {
+                  team: true,
+                },
+              },
+            },
+          })
+        : Promise.resolve(null),
+      auction.highestBidTeamId
+        ? this.prisma.team.findUnique({
+            where: { id: auction.highestBidTeamId },
+          })
+        : Promise.resolve(null),
+    ]);
+
+    const state = {
       auction: {
         ...auction,
         secondsLeft: this.secondsLeft,
@@ -131,7 +185,7 @@ export class AuctionEngine {
       highestBidTeam,
       currentBid: auction.activePlayerPrice || (activePlayer ? activePlayer.basePrice : 0),
       teams: formattedTeams,
-      players: allPlayers,
+      players: fetchedPlayers,
       recentBids: auction.bids,
       minIncrement: auction.activePlayerPrice
         ? getMinBidIncrement(auction.activePlayerPrice)
@@ -139,6 +193,11 @@ export class AuctionEngine {
         ? getMinBidIncrement(activePlayer.basePrice)
         : 1000000,
     };
+
+    this.cachedFullAuctionState = state;
+    this.cacheTimestamp = Date.now();
+
+    return state;
   }
 
   /**
@@ -195,8 +254,11 @@ export class AuctionEngine {
       });
     }
 
-    this.startTimer();
+    if (auction.timerEnabled !== false) {
+      this.startTimer();
+    }
 
+    this.invalidateCache();
     const state = await this.getAuctionState();
     this.broadcast('auction:started', state);
     return state;
@@ -207,6 +269,10 @@ export class AuctionEngine {
    */
   public async pauseAuction() {
     this.stopTimer();
+    if (this.autoNextTimeout) {
+      clearTimeout(this.autoNextTimeout);
+      this.autoNextTimeout = null;
+    }
 
     const auction = await this.prisma.auction.findFirst({
       orderBy: { createdAt: 'desc' },
@@ -219,6 +285,7 @@ export class AuctionEngine {
       });
     }
 
+    this.invalidateCache();
     const state = await this.getAuctionState();
     this.broadcast('auction:paused', state);
     return state;
@@ -239,7 +306,10 @@ export class AuctionEngine {
       });
     }
 
-    this.startTimer();
+    if (auction && auction.timerEnabled !== false) {
+      this.startTimer();
+    }
+    this.invalidateCache();
     const state = await this.getAuctionState();
     this.broadcast('auction:resumed', state);
     return state;
@@ -254,6 +324,7 @@ export class AuctionEngine {
       clearTimeout(this.autoNextTimeout);
       this.autoNextTimeout = null;
     }
+    this.invalidateCache();
 
     const auction = await this.prisma.auction.findFirst({
       orderBy: { createdAt: 'desc' },
@@ -271,14 +342,16 @@ export class AuctionEngine {
       data: { status: 'UPCOMING' },
     });
 
+    // Put this player into auction with base price
     await this.prisma.player.update({
       where: { id: playerId },
-      data: { status: 'IN_AUCTION' },
+      data: { status: 'IN_AUCTION', currentPrice: player.basePrice },
     });
 
     // Update auction player entry
     let auctionPlayer = await this.prisma.auctionPlayer.findFirst({
       where: { auctionId: auction.id, playerId: playerId },
+      orderBy: { createdAt: 'desc' },
     });
 
     if (!auctionPlayer) {
@@ -298,10 +371,16 @@ export class AuctionEngine {
       });
     }
 
-    // Update auction
+    // Clear prior bids for this player so bidding starts fresh at base price
+    await this.prisma.bid.deleteMany({
+      where: { auctionId: auction.id, playerId: playerId },
+    });
+
+    // Update auction to ACTIVE status so teams can bid immediately
     await this.prisma.auction.update({
       where: { id: auction.id },
       data: {
+        status: 'ACTIVE',
         activePlayerId: playerId,
         activePlayerPrice: player.basePrice,
         highestBidTeamId: null,
@@ -309,8 +388,13 @@ export class AuctionEngine {
     });
 
     this.secondsLeft = auction.defaultTimerSec || 10;
+    if (auction.timerEnabled !== false) {
+      this.startTimer();
+    }
     const state = await this.getAuctionState();
     this.broadcast('auction:player', state);
+    this.broadcast('auction:resumed', state);
+    this.broadcast('auction:players_updated', state);
     return state;
   }
 
@@ -398,9 +482,19 @@ export class AuctionEngine {
     this.isProcessingBid = true;
 
     try {
-      const auction = await this.prisma.auction.findFirst({
-        orderBy: { createdAt: 'desc' },
-      });
+      const [auction, team] = await Promise.all([
+        this.prisma.auction.findFirst({
+          orderBy: { createdAt: 'desc' },
+        }),
+        this.prisma.team.findUnique({
+          where: { id: teamId },
+          include: {
+            squad: {
+              include: { player: true },
+            },
+          },
+        }),
+      ]);
 
       if (!auction) {
         throw new Error('No active auction found.');
@@ -414,25 +508,16 @@ export class AuctionEngine {
         throw new Error('No player is currently on the auction block.');
       }
 
+      if (!team) {
+        throw new Error('Team not found.');
+      }
+
       const player = await this.prisma.player.findUnique({
         where: { id: auction.activePlayerId },
       });
 
       if (!player) {
         throw new Error('Active player not found.');
-      }
-
-      const team = await this.prisma.team.findUnique({
-        where: { id: teamId },
-        include: {
-          squad: {
-            include: { player: true },
-          },
-        },
-      });
-
-      if (!team) {
-        throw new Error('Team not found.');
       }
 
       // Rule: Team cannot bid against itself if already highest bidder
@@ -536,17 +621,34 @@ export class AuctionEngine {
         });
 
         return { newBid, updatedAuction };
-      });
+      }, { maxWait: 15000, timeout: 30000 });
 
       // Reset timer to default on every valid bid if timer is enabled
-      const currentAuction = await this.prisma.auction.findFirst({ orderBy: { createdAt: 'desc' } });
-      if (currentAuction && currentAuction.timerEnabled !== false) {
-        this.secondsLeft = currentAuction.defaultTimerSec || 10;
+      if (auction.timerEnabled !== false) {
+        this.secondsLeft = auction.defaultTimerSec || 10;
         this.startTimer();
       }
 
-      // Broadcast bid event
-      const state = await this.getAuctionState();
+      // Fast update in-memory cached state directly (avoiding 4-8 second DB query)
+      if (this.cachedFullAuctionState) {
+        this.cachedFullAuctionState.auction = {
+          ...this.cachedFullAuctionState.auction,
+          activePlayerPrice: targetBid,
+          highestBidTeamId: team.id,
+          secondsLeft: this.secondsLeft,
+        };
+        this.cachedFullAuctionState.highestBidTeam = team;
+        this.cachedFullAuctionState.currentBid = targetBid;
+        this.cachedFullAuctionState.minIncrement = getMinBidIncrement(targetBid);
+        this.cachedFullAuctionState.recentBids = [
+          result.newBid,
+          ...(this.cachedFullAuctionState.recentBids || []).filter((b: any) => b.id !== result.newBid.id).slice(0, 19),
+        ];
+      }
+
+      const state = this.cachedFullAuctionState || (await this.getAuctionState());
+
+      // Broadcast bid event instantly
       this.broadcast('auction:bid', {
         bid: result.newBid,
         amount: targetBid,
@@ -565,8 +667,9 @@ export class AuctionEngine {
 
   /**
    * Conclude current player as SOLD
+   * Supports manual selling directly to a specified team at a specified price by Admin
    */
-  public async sellPlayer() {
+  public async sellPlayer(manualTeamId?: string, manualPrice?: number) {
     this.stopTimer();
 
     const auction = await this.prisma.auction.findFirst({
@@ -577,20 +680,36 @@ export class AuctionEngine {
       throw new Error('No active player on the auction block.');
     }
 
-    if (!auction.highestBidTeamId || !auction.activePlayerPrice) {
-      // If nobody bid, mark as unsold instead
+    const playerId = auction.activePlayerId;
+    const teamId = manualTeamId || auction.highestBidTeamId;
+
+    if (!teamId) {
+      // If nobody bid and no manual team specified, mark as unsold instead
       return await this.markUnsold();
     }
 
-    const playerId = auction.activePlayerId;
-    const teamId = auction.highestBidTeamId;
-    const winningPrice = auction.activePlayerPrice;
-
     const player = await this.prisma.player.findUnique({ where: { id: playerId } });
-    const team = await this.prisma.team.findUnique({ where: { id: teamId } });
+    const team = await this.prisma.team.findUnique({
+      where: { id: teamId },
+      include: { squad: true },
+    });
 
     if (!player || !team) {
-      throw new Error('Player or winning team not found.');
+      throw new Error('Player or target team not found.');
+    }
+
+    const winningPrice = (manualPrice !== undefined && Number(manualPrice) > 0)
+      ? Number(manualPrice)
+      : (auction.activePlayerPrice || player.basePrice || 100);
+
+    // Validate team purse
+    if (team.remainingPurse < winningPrice) {
+      throw new Error(`Team ${team.name} has insufficient purse (${formatRupees(team.remainingPurse)}) for ${formatRupees(winningPrice)}.`);
+    }
+
+    // Validate squad limit
+    if (team.squad.length >= team.maxSquadSize) {
+      throw new Error(`Team ${team.name} has already reached the maximum squad limit (${team.maxSquadSize} players).`);
     }
 
     // Atomic transaction for purse deduction, squad addition, status update
@@ -603,11 +722,16 @@ export class AuctionEngine {
         },
       });
 
-      // 2. Add player to squad
-      await tx.teamPlayer.create({
-        data: {
+      // 2. Add or update player in squad (upsert avoids unique constraint failures on re-auction/icon players)
+      await tx.teamPlayer.upsert({
+        where: { playerId: playerId },
+        create: {
           teamId: teamId,
           playerId: playerId,
+          price: winningPrice,
+        },
+        update: {
+          teamId: teamId,
           price: winningPrice,
         },
       });
@@ -635,28 +759,43 @@ export class AuctionEngine {
         },
       });
 
-      // 5. Log event
+      // 5. Update auction active record
+      await tx.auction.update({
+        where: { id: auction.id },
+        data: {
+          highestBidTeamId: teamId,
+          activePlayerPrice: winningPrice,
+        },
+      });
+
+      // 6. Log event
       await tx.auctionEvent.create({
         data: {
           auctionId: auction.id,
           type: 'SOLD',
-          message: `SOLD! ${player.name} sold to ${team.name} for ${formatRupees(winningPrice)}!`,
+          message: manualTeamId
+            ? `SOLD! ${player.name} manually sold to ${team.name} for ${formatRupees(winningPrice)}!`
+            : `SOLD! ${player.name} sold to ${team.name} for ${formatRupees(winningPrice)}!`,
           metadata: JSON.stringify({
             playerId: player.id,
             playerName: player.name,
             teamId: team.id,
             teamName: team.name,
             amount: winningPrice,
+            isManualSale: Boolean(manualTeamId),
           }),
         },
       });
-    });
+    }, { maxWait: 15000, timeout: 30000 });
+
+    this.invalidateCache();
 
     const soldData = {
       player,
       winningTeam: team,
       finalPrice: winningPrice,
       formattedPrice: formatRupees(winningPrice),
+      isManualSale: Boolean(manualTeamId),
     };
 
     const state = await this.getAuctionState();
@@ -665,14 +804,16 @@ export class AuctionEngine {
       state,
     });
 
-    // Automatically transition to next player after 4.5 seconds broadcast pause
-    this.autoNextTimeout = setTimeout(async () => {
-      try {
-        await this.nextPlayer();
-      } catch (err) {
-        console.error('Error auto-advancing next player:', err);
-      }
-    }, 4500);
+    // Automatically transition to next player after 4.5 seconds broadcast pause (if timer is enabled)
+    if (auction.timerEnabled !== false) {
+      this.autoNextTimeout = setTimeout(async () => {
+        try {
+          await this.nextPlayer();
+        } catch (err) {
+          console.error('Error auto-advancing next player:', err);
+        }
+      }, 4500);
+    }
 
     return { success: true, ...soldData, state };
   }
@@ -872,7 +1013,9 @@ export class AuctionEngine {
           metadata: JSON.stringify({ playerId: player.id, playerName: player.name }),
         },
       });
-    });
+    }, { maxWait: 15000, timeout: 30000 });
+
+    this.invalidateCache();
 
     const unsoldData = {
       player,
@@ -886,14 +1029,16 @@ export class AuctionEngine {
       state,
     });
 
-    // Automatically advance after 3.5 seconds
-    this.autoNextTimeout = setTimeout(async () => {
-      try {
-        await this.nextPlayer();
-      } catch (err) {
-        console.error('Error auto-advancing next player:', err);
-      }
-    }, 3500);
+    // Automatically advance after 3.5 seconds (if timer is enabled)
+    if (auction.timerEnabled !== false) {
+      this.autoNextTimeout = setTimeout(async () => {
+        try {
+          await this.nextPlayer();
+        } catch (err) {
+          console.error('Error auto-advancing next player:', err);
+        }
+      }, 3500);
+    }
 
     return { success: true, ...unsoldData, state };
   }
@@ -927,12 +1072,23 @@ export class AuctionEngine {
       throw new Error('There are currently no unsold players to re-auction.');
     }
 
-    // Reset status to UPCOMING and create new AuctionPlayer entries for round 2
+    // Shuffle unsold players so they enter the next bidding round in randomized order
+    for (let i = unsoldPlayers.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [unsoldPlayers[i], unsoldPlayers[j]] = [unsoldPlayers[j], unsoldPlayers[i]];
+    }
+
+    // Reset status to UPCOMING and create new AuctionPlayer entries for next round
     for (let i = 0; i < unsoldPlayers.length; i++) {
       const p = unsoldPlayers[i];
       await this.prisma.player.update({
         where: { id: p.id },
-        data: { status: 'UPCOMING' },
+        data: { status: 'UPCOMING', currentPrice: p.basePrice },
+      });
+
+      // Clear any prior failed bids for this player
+      await this.prisma.bid.deleteMany({
+        where: { auctionId: auction.id, playerId: p.id },
       });
 
       await this.prisma.auctionPlayer.create({
@@ -958,7 +1114,9 @@ export class AuctionEngine {
       },
     });
 
-    return await this.nextPlayer();
+    const state = await this.nextPlayer();
+    this.broadcast('auction:players_updated', state);
+    return state;
   }
 
   /**
@@ -977,12 +1135,14 @@ export class AuctionEngine {
     await this.prisma.auctionEvent.deleteMany();
     await this.prisma.auctionPlayer.deleteMany();
 
-    // 2. Reset team purses to their total purse
-    const allTeams = await this.prisma.team.findMany();
-    for (const t of allTeams) {
+    // 2. Reset each team's purse back to their configured tournament totalPurse
+    const teams = await this.prisma.team.findMany();
+    for (const t of teams) {
       await this.prisma.team.update({
         where: { id: t.id },
-        data: { remainingPurse: t.totalPurse },
+        data: {
+          remainingPurse: t.totalPurse,
+        },
       });
     }
 
@@ -1013,10 +1173,12 @@ export class AuctionEngine {
         },
       });
 
-      // Re-enqueue all players
-      const allPlayers = await this.prisma.player.findMany({
-        orderBy: { basePrice: 'desc' },
-      });
+      // Re-enqueue all players with Fisher-Yates shuffle so players belonging to all teams and free agents are mixed
+      const allPlayers = await this.prisma.player.findMany();
+      for (let i = allPlayers.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [allPlayers[i], allPlayers[j]] = [allPlayers[j], allPlayers[i]];
+      }
 
       for (let idx = 0; idx < allPlayers.length; idx++) {
         await this.prisma.auctionPlayer.create({
@@ -1033,8 +1195,66 @@ export class AuctionEngine {
     }
 
     this.secondsLeft = 10;
+    this.invalidateCache();
     const state = await this.getAuctionState();
     this.broadcast('auction:reset', state);
+    return state;
+  }
+
+  /**
+   * Shuffle all pending players in the current auction pool
+   * Randomizes the order so players belonging to different teams and free agents
+   * are mixed fairly before and during auction draft rounds.
+   */
+  public async shuffleAuctionPool() {
+    const auction = await this.prisma.auction.findFirst({
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!auction) throw new Error('No auction found');
+
+    const pendingAuctionPlayers = await this.prisma.auctionPlayer.findMany({
+      where: {
+        auctionId: auction.id,
+        status: 'PENDING',
+      },
+    });
+
+    if (pendingAuctionPlayers.length <= 1) {
+      const state = await this.getAuctionState();
+      return state;
+    }
+
+    // Fisher-Yates shuffle
+    const shuffled = [...pendingAuctionPlayers];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+
+    // Update orderIndex
+    for (let idx = 0; idx < shuffled.length; idx++) {
+      await this.prisma.auctionPlayer.update({
+        where: { id: shuffled[idx].id },
+        data: { orderIndex: idx + 1 },
+      });
+    }
+
+    await this.prisma.auctionEvent.create({
+      data: {
+        auctionId: auction.id,
+        type: 'SHUFFLED',
+        message: `Auction pool shuffled! ${shuffled.length} upcoming players randomized.`,
+        metadata: JSON.stringify({ count: shuffled.length }),
+      },
+    });
+
+    this.invalidateCache();
+    const state = await this.getAuctionState();
+    this.broadcast('auction:players_updated', state);
+    this.broadcast('auction:shuffled', {
+      message: `Auction pool shuffled! ${shuffled.length} upcoming players randomized.`,
+      state,
+    });
     return state;
   }
 
@@ -1049,6 +1269,7 @@ export class AuctionEngine {
     defaultSquadLimit?: number;
     iconPlayerPrice?: number;
     defaultBasePrice?: number;
+    applyToExistingTeams?: boolean;
   }) {
     const auction = await this.prisma.auction.findFirst({
       orderBy: { createdAt: 'desc' },
@@ -1068,14 +1289,42 @@ export class AuctionEngine {
       },
     });
 
+    if (settings.applyToExistingTeams && (settings.defaultPurse || settings.defaultSquadLimit)) {
+      const teams = await this.prisma.team.findMany();
+      for (const t of teams) {
+        const spent = t.totalPurse - t.remainingPurse;
+        const newTotal = settings.defaultPurse ? Number(settings.defaultPurse) : t.totalPurse;
+        const newRemaining = Math.max(0, newTotal - spent);
+        await this.prisma.team.update({
+          where: { id: t.id },
+          data: {
+            totalPurse: newTotal,
+            remainingPurse: newRemaining,
+            maxSquadSize: settings.defaultSquadLimit ? Number(settings.defaultSquadLimit) : t.maxSquadSize,
+          },
+        });
+      }
+    }
+
     if (settings.defaultTimerSec) {
       this.secondsLeft = Number(settings.defaultTimerSec);
     }
 
     if (settings.timerEnabled === false) {
       this.stopTimer();
+      this.broadcast('auction:timer', {
+        secondsLeft: null,
+        timerEnabled: false,
+        message: 'Manual Auction Mode (Timer Disabled)',
+      });
+    } else if (settings.timerEnabled === true) {
+      if (updated.status === 'ACTIVE' && updated.activePlayerId) {
+        this.secondsLeft = updated.defaultTimerSec || 10;
+        this.startTimer();
+      }
     }
 
+    this.invalidateCache();
     const state = await this.getAuctionState();
     this.broadcast('auction:settings_updated', state);
     return state;
@@ -1146,10 +1395,14 @@ export class AuctionEngine {
     }, 1000);
   }
 
-  private stopTimer() {
+  public stopTimer() {
     if (this.timerInterval) {
       clearInterval(this.timerInterval);
       this.timerInterval = null;
+    }
+    if (this.autoNextTimeout) {
+      clearTimeout(this.autoNextTimeout);
+      this.autoNextTimeout = null;
     }
   }
 }

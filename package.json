@@ -10,6 +10,8 @@
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push",
     "prisma:seed": "ts-node prisma/seed.ts",
+    "backup": "ts-node scripts/backup-db.ts",
+    "restore": "ts-node scripts/restore-db.ts",
     "test": "vitest run"
   },
   "dependencies": {

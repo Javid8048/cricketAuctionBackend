@@ -1,13 +1,29 @@
 import { Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { prisma } from '../prisma';
 import bcrypt from 'bcryptjs';
 import { formatRupees } from '../utils/currency';
 import { auctionEngine } from './auction.controller';
+import { triggerDebouncedSnapshot } from '../utils/persistence';
 
-const prisma = new PrismaClient();
+// In-memory cache for ultra-fast teams list retrieval
+let cachedTeamsData: any[] | null = null;
+let teamsCacheTimestamp: number = 0;
+const TEAMS_CACHE_TTL_MS = 15000; // 15 seconds
+
+export function invalidateTeamsCache() {
+  cachedTeamsData = null;
+  teamsCacheTimestamp = 0;
+}
+
+// Automatically clear cache whenever auction engine invalidates
+auctionEngine.onInvalidate(invalidateTeamsCache);
 
 export async function getTeams(req: Request, res: Response) {
   try {
+    if (cachedTeamsData && (Date.now() - teamsCacheTimestamp < TEAMS_CACHE_TTL_MS)) {
+      return res.json(cachedTeamsData);
+    }
+
     const teams = await prisma.team.findMany({
       include: {
         squad: {
@@ -43,6 +59,9 @@ export async function getTeams(req: Request, res: Response) {
         totalSpent,
       };
     });
+
+    cachedTeamsData = formatted;
+    teamsCacheTimestamp = Date.now();
 
     res.json(formatted);
   } catch (error: any) {
@@ -137,7 +156,7 @@ export async function createTeam(req: Request, res: Response) {
     // Create User login if credentials were provided
     if (loginUsername && loginPassword) {
       const hashedPassword = await bcrypt.hash(loginPassword, 10);
-      const email = loginUsername.includes('@') ? loginUsername.toLowerCase() : `${loginUsername.toLowerCase()}@franchise.local`;
+      const email = loginUsername.includes('@') ? loginUsername.toLowerCase() : `${loginUsername.toLowerCase()}@team.local`;
 
       // Check if user already exists
       const existingUser = await prisma.user.findFirst({
@@ -172,7 +191,19 @@ export async function createTeam(req: Request, res: Response) {
       }
     }
 
+    auctionEngine.invalidateCache();
+
     res.status(201).json(team);
+
+    setImmediate(async () => {
+      try {
+        const state = await auctionEngine.getAuctionState();
+        if (state) {
+          auctionEngine.broadcast('auction:settings_updated', state);
+        }
+      } catch (_) {}
+      triggerDebouncedSnapshot();
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to create team.' });
   }
@@ -217,7 +248,7 @@ export async function updateTeam(req: Request, res: Response) {
 
     if (loginUsername && loginPassword) {
       const hashedPassword = await bcrypt.hash(loginPassword, 10);
-      const email = loginUsername.includes('@') ? loginUsername.toLowerCase() : `${loginUsername.toLowerCase()}@franchise.local`;
+      const email = loginUsername.includes('@') ? loginUsername.toLowerCase() : `${loginUsername.toLowerCase()}@team.local`;
 
       const existingUser = await prisma.user.findFirst({
         where: {
@@ -251,7 +282,19 @@ export async function updateTeam(req: Request, res: Response) {
       }
     }
 
+    auctionEngine.invalidateCache();
+
     res.json(team);
+
+    setImmediate(async () => {
+      try {
+        const state = await auctionEngine.getAuctionState();
+        if (state) {
+          auctionEngine.broadcast('auction:settings_updated', state);
+        }
+      } catch (_) {}
+      triggerDebouncedSnapshot();
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to update team.' });
   }
@@ -263,66 +306,80 @@ export async function deleteTeam(req: Request, res: Response) {
 
     const team = await prisma.team.findUnique({
       where: { id },
-      include: {
-        squad: true,
-      },
+      select: { name: true },
     });
 
     if (!team) {
       return res.status(404).json({ error: 'Team not found.' });
     }
 
-    await prisma.$transaction(async (tx) => {
-      // 1. Release all players in this team's squad back to UPCOMING
-      const playerIds = team.squad.map((sp) => sp.playerId);
-      if (playerIds.length > 0) {
-        await tx.player.updateMany({
-          where: { id: { in: playerIds } },
-          data: {
-            status: 'UPCOMING',
-            currentPrice: null,
-          },
-        });
-      }
-
-      // 2. Delete team player links
-      await tx.teamPlayer.deleteMany({
-        where: { teamId: id },
-      });
-
-      // 3. Delete bids placed by this team
-      await tx.bid.deleteMany({
-        where: { teamId: id },
-      });
-
-      // 4. Clear winningTeamId on AuctionPlayer
-      await tx.auctionPlayer.updateMany({
-        where: { winningTeamId: id },
-        data: { winningTeamId: null },
-      });
-
-      // 5. If current auction has this team as highest bidder, reset highestBidTeamId
-      await tx.auction.updateMany({
-        where: { highestBidTeamId: id },
-        data: { highestBidTeamId: null },
-      });
-
-      // 6. Delete linked franchise user account
-      await tx.user.deleteMany({
-        where: { teamId: id },
-      });
-
-      // 7. Finally delete the team
-      await tx.team.delete({
-        where: { id },
-      });
+    // 1. Revert all squad players to UPCOMING in a single batch query
+    const squadPlayers = await prisma.teamPlayer.findMany({
+      where: { teamId: id },
+      select: { playerId: true },
     });
 
-    try {
-      await auctionEngine.broadcastState();
-    } catch (e) {}
+    const playerIds = squadPlayers.map((sp) => sp.playerId);
+    if (playerIds.length > 0) {
+      await prisma.player.updateMany({
+        where: { id: { in: playerIds } },
+        data: {
+          status: 'UPCOMING',
+          currentPrice: null,
+          isIcon: false,
+          iconPrice: null,
+        },
+      });
+    }
 
+    // 2. Parallel cleanup of related records and team deletion
+    await Promise.all([
+      prisma.player.updateMany({
+        where: { belongingTeamId: id },
+        data: { belongingTeamId: null },
+      }),
+      prisma.teamPlayer.deleteMany({
+        where: { teamId: id },
+      }),
+      prisma.user.deleteMany({
+        where: { teamId: id },
+      }),
+      prisma.bid.deleteMany({
+        where: { teamId: id },
+      }),
+      prisma.auctionPlayer.updateMany({
+        where: { winningTeamId: id },
+        data: {
+          winningTeamId: null,
+          status: 'PENDING',
+          finalPrice: null,
+        },
+      }),
+      prisma.auction.updateMany({
+        where: { highestBidTeamId: id },
+        data: {
+          highestBidTeamId: null,
+        },
+      }),
+    ]);
+
+    await prisma.team.delete({
+      where: { id },
+    });
+
+    // Invalidate auction engine cache for fast updates
+    auctionEngine.invalidateCache();
+
+    // Return instant HTTP response
     res.json({ success: true, message: `Team ${team.name} deleted successfully.` });
+
+    // Asynchronous broadcast & debounced snapshot in background
+    setImmediate(async () => {
+      try {
+        await auctionEngine.broadcastState();
+      } catch (_) {}
+      triggerDebouncedSnapshot();
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to delete team.' });
   }
@@ -373,13 +430,18 @@ export async function deleteAllTeams(req: Request, res: Response) {
       await tx.team.deleteMany();
     });
 
-    try {
-      await auctionEngine.broadcastState();
-    } catch (e) {}
+    auctionEngine.invalidateCache();
 
     res.json({
       success: true,
       message: `Successfully deleted all ${teams.length} teams. Players returned to draft pool.`,
+    });
+
+    setImmediate(async () => {
+      try {
+        await auctionEngine.broadcastState();
+      } catch (_) {}
+      triggerDebouncedSnapshot();
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to delete all teams.' });
@@ -495,7 +557,10 @@ export async function assignIconPlayer(req: Request, res: Response) {
           },
         });
       }
-    });
+    }, { maxWait: 15000, timeout: 30000 });
+
+    auctionEngine.invalidateCache();
+    triggerDebouncedSnapshot();
 
     res.json({
       success: true,
@@ -561,7 +626,10 @@ export async function removeIconPlayer(req: Request, res: Response) {
           },
         });
       }
-    });
+    }, { maxWait: 15000, timeout: 30000 });
+
+    auctionEngine.invalidateCache();
+    triggerDebouncedSnapshot();
 
     res.json({
       success: true,
@@ -574,10 +642,15 @@ export async function removeIconPlayer(req: Request, res: Response) {
 }
 
 /**
- * Get credentials of all franchises (Admin only)
+ * Get credentials of all teams (Admin only)
  */
 export async function getFranchiseCredentials(req: Request, res: Response) {
   try {
+    const caller = (req as any).user;
+    if (!caller || caller.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Access forbidden. Administrator role required.' });
+    }
+
     const teams = await prisma.team.findMany({
       select: {
         id: true,
@@ -595,15 +668,20 @@ export async function getFranchiseCredentials(req: Request, res: Response) {
     });
     res.json(teams);
   } catch (error: any) {
-    res.status(500).json({ error: error.message || 'Failed to fetch franchise credentials.' });
+    res.status(500).json({ error: error.message || 'Failed to fetch team credentials.' });
   }
 }
 
 /**
- * Update credentials of a franchise (Admin only)
+ * Update credentials of a team (Admin only)
  */
 export async function updateFranchiseCredentials(req: Request, res: Response) {
   try {
+    const caller = (req as any).user;
+    if (!caller || caller.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Access forbidden. Administrator role required.' });
+    }
+
     const { id } = req.params;
     const { loginUsername, loginPassword } = req.body;
 
@@ -613,13 +691,13 @@ export async function updateFranchiseCredentials(req: Request, res: Response) {
 
     const team = await prisma.team.findUnique({ where: { id } });
     if (!team) {
-      return res.status(404).json({ error: 'Franchise not found.' });
+      return res.status(404).json({ error: 'Team not found.' });
     }
 
     const hashedPassword = await bcrypt.hash(loginPassword.trim(), 10);
     const email = loginUsername.includes('@')
       ? loginUsername.toLowerCase().trim()
-      : `${loginUsername.toLowerCase().trim()}@franchise.local`;
+      : `${loginUsername.toLowerCase().trim()}@team.local`;
 
     await prisma.team.update({
       where: { id },
@@ -669,3 +747,6 @@ export async function updateFranchiseCredentials(req: Request, res: Response) {
     res.status(500).json({ error: error.message || 'Failed to update credentials.' });
   }
 }
+
+export const getTeamCredentials = getFranchiseCredentials;
+export const updateTeamCredentials = updateFranchiseCredentials;

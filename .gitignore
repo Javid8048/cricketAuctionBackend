@@ -25,3 +25,7 @@ dist
 .DS_Store
 .vscode
 .idea
+
+# Backups
+backups/backup-*.json
+!backups/latest-backup.json

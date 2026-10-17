@@ -1,9 +1,8 @@
 import { Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { prisma } from '../prisma';
 import { AuctionEngine } from '../services/auction-engine.service';
 import { AuthenticatedRequest } from '../middleware/auth.middleware';
 
-const prisma = new PrismaClient();
 export const auctionEngine = new AuctionEngine(prisma);
 
 export async function getCurrentAuction(req: Request, res: Response) {
@@ -99,7 +98,8 @@ export async function placeBid(req: AuthenticatedRequest, res: Response) {
 
 export async function sellPlayer(req: AuthenticatedRequest, res: Response) {
   try {
-    const result = await auctionEngine.sellPlayer();
+    const { teamId, price } = req.body || {};
+    const result = await auctionEngine.sellPlayer(teamId, price ? Number(price) : undefined);
     res.json(result);
   } catch (error: any) {
     res.status(400).json({ error: error.message || 'Failed to sell player.' });
@@ -228,19 +228,26 @@ export async function updateAuctionSettings(req: AuthenticatedRequest, res: Resp
   }
 }
 
+export async function shuffleAuctionPool(req: AuthenticatedRequest, res: Response) {
+  try {
+    const state = await auctionEngine.shuffleAuctionPool();
+    res.json({ success: true, message: 'Auction pool shuffled successfully.', state });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to shuffle auction pool.' });
+  }
+}
+
 export async function clearAllTournamentData(req: AuthenticatedRequest, res: Response) {
   try {
+    // Non-destructive auction reset: Clears auction history/squads but PERMANENTLY PRESERVES all players and teams
     await prisma.bid.deleteMany();
     await prisma.teamPlayer.deleteMany();
     await prisma.auctionEvent.deleteMany();
     await prisma.auctionPlayer.deleteMany();
-    await prisma.player.deleteMany();
-    await prisma.user.deleteMany({ where: { role: 'TEAM' } });
-    await prisma.team.deleteMany();
     await auctionEngine.resetAuction();
-    res.json({ success: true, message: 'All franchises and players cleared successfully.' });
+    res.json({ success: true, message: 'Tournament auction state reset successfully while preserving all registered players and teams.' });
   } catch (error: any) {
-    res.status(500).json({ error: error.message || 'Failed to clear tournament data.' });
+    res.status(500).json({ error: error.message || 'Failed to reset tournament auction state.' });
   }
 }
 

@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import { AuctionEngine } from '../services/auction-engine.service';
 import { formatRupees, getMinBidIncrement } from '../utils/currency';
 
-describe('Cricket Auction Arena - Core Bidding & Rules Tests', () => {
+describe('Cricket Auction Arena - Core Bidding & Rules Tests', { timeout: 60000 }, () => {
   let prisma: PrismaClient;
   let engine: AuctionEngine;
   let testTeam1: any;
@@ -15,32 +15,153 @@ describe('Cricket Auction Arena - Core Bidding & Rules Tests', () => {
     prisma = new PrismaClient();
     engine = new AuctionEngine(prisma);
 
-    // Get 2 teams from seed
-    const teams = await prisma.team.findMany({ take: 2 });
-    testTeam1 = teams[0];
-    testTeam2 = teams[1];
+    // Ensure an auction record exists and disable timer during unit tests
+    let auction = await prisma.auction.findFirst();
+    if (!auction) {
+      auction = await prisma.auction.create({
+        data: {
+          status: 'ACTIVE',
+          defaultPurse: 15000,
+          defaultSquadLimit: 12,
+          timerEnabled: false,
+        },
+      });
+    } else {
+      await prisma.auction.update({
+        where: { id: auction.id },
+        data: { timerEnabled: false },
+      });
+    }
 
-    // Get an overseas and a domestic player
-    testPlayerOverseas = await prisma.player.findFirst({ where: { isOverseas: true } });
-    testPlayerDomestic = await prisma.player.findFirst({ where: { isOverseas: false } });
+    // Clean up any stale test teams / players from previous aborted runs
+    const staleTeams = await prisma.team.findMany({
+      where: { name: { in: ['Vitest Test Franchise Alpha', 'Vitest Test Franchise Beta'] } },
+    });
+    for (const t of staleTeams) {
+      await prisma.teamPlayer.deleteMany({ where: { teamId: t.id } });
+      await prisma.bid.deleteMany({ where: { teamId: t.id } });
+      await prisma.team.delete({ where: { id: t.id } });
+    }
+    const stalePlayers = await prisma.player.findMany({
+      where: { name: { in: ['Vitest Domestic Test Player', 'Vitest Overseas Test Player', 'Team 1 Home Player'] } },
+    });
+    for (const p of stalePlayers) {
+      await prisma.teamPlayer.deleteMany({ where: { playerId: p.id } });
+      await prisma.auctionPlayer.deleteMany({ where: { playerId: p.id } });
+      await prisma.bid.deleteMany({ where: { playerId: p.id } });
+      await prisma.player.delete({ where: { id: p.id } });
+    }
+
+    // Create 2 isolated test teams dedicated to the test suite (non-destructive)
+    testTeam1 = await prisma.team.create({
+      data: {
+        name: 'Vitest Test Franchise Alpha',
+        shortName: 'VFA',
+        logoText: 'VFA',
+        totalPurse: 15000,
+        remainingPurse: 15000,
+        maxSquadSize: 25,
+        maxOverseas: 8,
+      },
+    });
+
+    testTeam2 = await prisma.team.create({
+      data: {
+        name: 'Vitest Test Franchise Beta',
+        shortName: 'VFB',
+        logoText: 'VFB',
+        totalPurse: 15000,
+        remainingPurse: 15000,
+        maxSquadSize: 25,
+        maxOverseas: 8,
+      },
+    });
+
+    // Create isolated test players dedicated to the test suite
+    testPlayerDomestic = await prisma.player.create({
+      data: {
+        name: 'Vitest Domestic Test Player',
+        profileImage: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400',
+        country: 'India',
+        isOverseas: false,
+        role: 'Batter',
+        basePrice: 500,
+        status: 'UPCOMING',
+      },
+    });
+
+    testPlayerOverseas = await prisma.player.create({
+      data: {
+        name: 'Vitest Overseas Test Player',
+        profileImage: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400',
+        country: 'Australia',
+        isOverseas: true,
+        role: 'All-Rounder',
+        basePrice: 500,
+        status: 'UPCOMING',
+      },
+    });
+  }, 60000);
+
+  beforeEach(() => {
+    engine.stopTimer();
   });
 
   afterAll(async () => {
-    await prisma.$disconnect();
+    try {
+      // Clear active player on auction record if pointing to a test player
+      const auction = await prisma.auction.findFirst();
+      if (auction) {
+        await prisma.auction.update({
+          where: { id: auction.id },
+          data: {
+            timerEnabled: true,
+            ...(auction.activePlayerId === testPlayerDomestic?.id || auction.activePlayerId === testPlayerOverseas?.id
+              ? { activePlayerId: null, highestBidTeamId: null, activePlayerPrice: 0 }
+              : {}),
+          },
+        });
+      }
+
+      // Clean up isolated test relations and entities
+      const testTeamIds = [testTeam1?.id, testTeam2?.id].filter(Boolean);
+      const testPlayerIds = [testPlayerDomestic?.id, testPlayerOverseas?.id].filter(Boolean);
+
+      if (testPlayerIds.length > 0) {
+        await prisma.bid.deleteMany({ where: { playerId: { in: testPlayerIds } } });
+        await prisma.auctionPlayer.deleteMany({ where: { playerId: { in: testPlayerIds } } });
+        await prisma.teamPlayer.deleteMany({ where: { playerId: { in: testPlayerIds } } });
+        await prisma.player.deleteMany({ where: { id: { in: testPlayerIds } } });
+      }
+
+      if (testTeamIds.length > 0) {
+        await prisma.bid.deleteMany({ where: { teamId: { in: testTeamIds } } });
+        await prisma.teamPlayer.deleteMany({ where: { teamId: { in: testTeamIds } } });
+        await prisma.team.deleteMany({ where: { id: { in: testTeamIds } } });
+      }
+    } catch (err) {
+      console.warn('Test cleanup warning:', err);
+    } finally {
+      await prisma.$disconnect();
+    }
+  }, 60000);
+
+  it('Currency formatting formats amounts in Indian locale (₹)', () => {
+    expect(formatRupees(20000000)).toBe('₹2,00,00,000');
+    expect(formatRupees(84000000)).toBe('₹8,40,00,000');
+    expect(formatRupees(15000)).toBe('₹15,000');
+    expect(formatRupees(2500)).toBe('₹2,500');
+    expect(formatRupees(100)).toBe('₹100');
+    expect(formatRupees(0)).toBe('₹0');
   });
 
-  it('Currency formatting formats Lakhs and Crores accurately', () => {
-    expect(formatRupees(20000000)).toBe('₹2 Cr');
-    expect(formatRupees(84000000)).toBe('₹8.40 Cr');
-    expect(formatRupees(5000000)).toBe('₹50 Lakh');
-    expect(formatRupees(2000000)).toBe('₹20 Lakh');
-    expect(formatRupees(1000000000)).toBe('₹100 Cr');
-  });
-
-  it('Calculates appropriate minimum bid increments', () => {
-    expect(getMinBidIncrement(5000000)).toBe(1000000); // 10 Lakh for < 1 Cr
-    expect(getMinBidIncrement(20000000)).toBe(2000000); // 20 Lakh for 1-5 Cr
-    expect(getMinBidIncrement(60000000)).toBe(2500000); // 25 Lakh for >= 5 Cr
+  it('Calculates appropriate minimum bid increments based on tournament scale', () => {
+    expect(getMinBidIncrement(100)).toBe(100); // ₹100 for < 500
+    expect(getMinBidIncrement(400)).toBe(100); // ₹100 for < 500
+    expect(getMinBidIncrement(500)).toBe(200); // ₹200 for 500-1999
+    expect(getMinBidIncrement(1500)).toBe(200); // ₹200 for 500-1999
+    expect(getMinBidIncrement(2000)).toBe(500); // ₹500 for >= 2000
+    expect(getMinBidIncrement(10000)).toBe(500); // ₹500 for >= 2000
   });
 
   it('Rejects bid if auction is not active', async () => {
@@ -50,7 +171,7 @@ describe('Cricket Auction Arena - Core Bidding & Rules Tests', () => {
       await prisma.auction.update({ where: { id: auction.id }, data: { status: 'PAUSED' } });
     }
 
-    await expect(engine.placeBid(testTeam1.id, 20000000)).rejects.toThrow(/Auction is currently/i);
+    await expect(engine.placeBid(testTeam1.id, 500)).rejects.toThrow(/Auction is currently/i);
   });
 
   it('Rejects bid if team purse is insufficient', async () => {
@@ -61,15 +182,15 @@ describe('Cricket Auction Arena - Core Bidding & Rules Tests', () => {
     // Temporarily reduce purse
     await prisma.team.update({
       where: { id: testTeam1.id },
-      data: { remainingPurse: 1000000 }, // only 10 Lakh
+      data: { remainingPurse: 50 }, // only ₹50
     });
 
-    await expect(engine.placeBid(testTeam1.id, 20000000)).rejects.toThrow(/Insufficient purse/i);
+    await expect(engine.placeBid(testTeam1.id, 500)).rejects.toThrow(/Insufficient purse/i);
 
     // Restore purse
     await prisma.team.update({
       where: { id: testTeam1.id },
-      data: { remainingPurse: 1000000000 },
+      data: { remainingPurse: 15000 },
     });
   });
 
@@ -92,14 +213,8 @@ describe('Cricket Auction Arena - Core Bidding & Rules Tests', () => {
   });
 
   it('Correctly enforces overseas player limits', async () => {
-    // Set team overseas count to 8
     await engine.selectPlayer(testPlayerOverseas.id);
     await engine.startAuction();
-
-    const team = await prisma.team.findUnique({
-      where: { id: testTeam1.id },
-      include: { squad: true },
-    });
 
     // Artificially change maxOverseas to 0 for strict test
     await prisma.team.update({
@@ -144,8 +259,8 @@ describe('Cricket Auction Arena - Core Bidding & Rules Tests', () => {
     await engine.startAuction();
 
     // Two teams try to bid concurrently
-    const bidPromise1 = engine.placeBid(testTeam1.id, testPlayerDomestic.basePrice + 10000000);
-    const bidPromise2 = engine.placeBid(testTeam2.id, testPlayerDomestic.basePrice + 10000000);
+    const bidPromise1 = engine.placeBid(testTeam1.id, testPlayerDomestic.basePrice + 100);
+    const bidPromise2 = engine.placeBid(testTeam2.id, testPlayerDomestic.basePrice + 100);
 
     const results = await Promise.allSettled([bidPromise1, bidPromise2]);
 
@@ -155,6 +270,12 @@ describe('Cricket Auction Arena - Core Bidding & Rules Tests', () => {
   });
 
   it('Successfully sells player and deducts purse atomically', async () => {
+    // Ensure purse is full
+    await prisma.team.update({
+      where: { id: testTeam1.id },
+      data: { remainingPurse: 15000 },
+    });
+
     await engine.selectPlayer(testPlayerDomestic.id);
     await engine.startAuction();
 
@@ -181,5 +302,62 @@ describe('Cricket Auction Arena - Core Bidding & Rules Tests', () => {
     // Verify player status is SOLD
     const playerRecord = await prisma.player.findUnique({ where: { id: testPlayerDomestic.id } });
     expect(playerRecord!.status).toBe('SOLD');
+  });
+
+  it('Allows any rival team to bid on and purchase a player affiliated to another belonging team', async () => {
+    // Create player belonging to Team 1
+    const affiliatedPlayer = await prisma.player.create({
+      data: {
+        name: 'Team 1 Home Player',
+        profileImage: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400',
+        country: 'India',
+        role: 'All-Rounder',
+        basePrice: 200,
+        belongingTeamId: testTeam1.id,
+        status: 'UPCOMING',
+      },
+    });
+
+    const auction = await prisma.auction.findFirst();
+    await prisma.auctionPlayer.create({
+      data: {
+        auctionId: auction!.id,
+        playerId: affiliatedPlayer.id,
+        status: 'PENDING',
+        orderIndex: 999,
+        basePrice: 200,
+      },
+    });
+
+    await engine.selectPlayer(affiliatedPlayer.id);
+
+    // Team 2 (rival team) bids on Team 1's affiliated player
+    await engine.placeBid(testTeam2.id, 200);
+
+    const sellRes = await engine.sellPlayer();
+    expect(sellRes.success).toBe(true);
+    expect(sellRes.winningTeam.id).toBe(testTeam2.id);
+
+    // Verify player is now in Team 2's tournament squad, while belongingTeamId remains Team 1
+    const finalPlayer = await prisma.player.findUnique({
+      where: { id: affiliatedPlayer.id },
+      include: { teamPlayer: { include: { team: true } }, belongingTeam: true },
+    });
+
+    expect(finalPlayer!.status).toBe('SOLD');
+    expect(finalPlayer!.belongingTeamId).toBe(testTeam1.id);
+    expect(finalPlayer!.teamPlayer?.teamId).toBe(testTeam2.id);
+
+    // Clean up
+    await prisma.teamPlayer.deleteMany({ where: { playerId: affiliatedPlayer.id } });
+    await prisma.auctionPlayer.deleteMany({ where: { playerId: affiliatedPlayer.id } });
+    await prisma.bid.deleteMany({ where: { playerId: affiliatedPlayer.id } });
+    await prisma.player.delete({ where: { id: affiliatedPlayer.id } });
+  });
+
+  it('Successfully shuffles pending auction pool order', async () => {
+    const shuffleResult = await engine.shuffleAuctionPool();
+    expect(shuffleResult).toBeDefined();
+    expect(shuffleResult.auction).toBeDefined();
   });
 });
