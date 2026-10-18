@@ -130,8 +130,8 @@ export class AuctionEngine {
     if (!auction) return null;
 
     // Safety guard: Auction cannot be ACTIVE if there is no active player on the block
-    if (!auction.activePlayerId && auction.status === 'ACTIVE') {
-      auction.status = 'PAUSED';
+    if (!auction.activePlayerId && (auction.status === 'ACTIVE' || auction.status === 'PAUSED')) {
+      auction.status = 'IDLE';
     }
 
     if (auction.timerEnabled !== undefined && auction.timerEnabled !== null) {
@@ -238,27 +238,52 @@ export class AuctionEngine {
         include: { player: true },
       });
 
-      if (firstPending) {
+      let targetPlayerId = firstPending?.playerId;
+      let targetPrice = firstPending?.player?.basePrice;
+
+      if (!firstPending) {
+        const upcomingPlayer = await this.prisma.player.findFirst({
+          where: { status: 'UPCOMING' },
+          orderBy: [{ sNo: 'asc' }, { name: 'asc' }],
+        });
+        if (upcomingPlayer) {
+          targetPlayerId = upcomingPlayer.id;
+          targetPrice = upcomingPlayer.basePrice || 100;
+          await this.prisma.auctionPlayer.create({
+            data: {
+              auctionId: auction.id,
+              playerId: upcomingPlayer.id,
+              status: 'CURRENT',
+              basePrice: targetPrice,
+              startedAt: new Date(),
+            },
+          });
+        }
+      }
+
+      if (targetPlayerId) {
         auction = await this.prisma.auction.update({
           where: { id: auction.id },
           data: {
             status: 'ACTIVE',
-            activePlayerId: firstPending.playerId,
-            activePlayerPrice: firstPending.player.basePrice,
+            activePlayerId: targetPlayerId,
+            activePlayerPrice: targetPrice || 100,
             highestBidTeamId: null,
             startedAt: auction.startedAt || new Date(),
           },
         });
 
         await this.prisma.player.update({
-          where: { id: firstPending.playerId },
+          where: { id: targetPlayerId },
           data: { status: 'IN_AUCTION' },
         });
 
-        await this.prisma.auctionPlayer.update({
-          where: { id: firstPending.id },
-          data: { status: 'CURRENT', startedAt: new Date() },
-        });
+        if (firstPending) {
+          await this.prisma.auctionPlayer.update({
+            where: { id: firstPending.id },
+            data: { status: 'CURRENT', startedAt: new Date() },
+          });
+        }
       } else {
         auction = await this.prisma.auction.update({
           where: { id: auction.id },
@@ -395,11 +420,11 @@ export class AuctionEngine {
       where: { auctionId: auction.id, playerId: playerId },
     });
 
-    // Update auction to PAUSED status so teams cannot bid until admin clicks Start
+    // Update auction to IDLE status so teams cannot bid until admin clicks Start
     await this.prisma.auction.update({
       where: { id: auction.id },
       data: {
-        status: 'PAUSED',
+        status: 'IDLE',
         activePlayerId: playerId,
         activePlayerPrice: player.basePrice || 100,
         highestBidTeamId: null,
@@ -411,7 +436,6 @@ export class AuctionEngine {
     this.invalidateCache();
     const state = await this.getAuctionState();
     this.broadcast('auction:player', state);
-    this.broadcast('auction:paused', state);
     this.broadcast('auction:players_updated', state);
     return state;
   }
@@ -423,8 +447,11 @@ export class AuctionEngine {
     const auction = await this.prisma.auction.findFirst({
       orderBy: { createdAt: 'desc' },
     });
-    if (!auction || !auction.activePlayerId) {
-      throw new Error('No active player on the auction block');
+    if (!auction) {
+      throw new Error('No auction found');
+    }
+    if (!auction.activePlayerId) {
+      return this.startAuction();
     }
 
     await this.prisma.auction.update({
