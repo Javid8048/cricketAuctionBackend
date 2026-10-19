@@ -89,7 +89,10 @@ export async function placeBid(req: AuthenticatedRequest, res: Response) {
     }
 
     const { amount } = req.body;
-    const result = await auctionEngine.placeBid(teamId, amount ? Number(amount) : undefined);
+    if (amount !== undefined && amount !== null && Number(amount) < 100) {
+      return res.status(400).json({ error: 'Bid price must be greater than or equal to ₹100.' });
+    }
+    const result = await auctionEngine.placeBid(teamId, amount !== undefined && amount !== null ? Number(amount) : undefined);
     res.json(result);
   } catch (error: any) {
     res.status(400).json({ error: error.message || 'Failed to place bid.' });

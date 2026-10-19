@@ -584,20 +584,23 @@ export class AuctionEngine {
       }
 
       // Calculate next bid amount
-      const currentHighest = auction.activePlayerPrice || player.basePrice;
+      const currentHighest = auction.activePlayerPrice || player.basePrice || 100;
       const minInc = getMinBidIncrement(currentHighest);
       let targetBid: number;
 
       if (!auction.highestBidTeamId) {
-        // First bid can be at base price or custom amount >= base price
-        targetBid = customAmount ? customAmount : player.basePrice;
-        if (targetBid < player.basePrice) {
-          throw new Error(`Bid must be at least base price of ${formatRupees(player.basePrice)}.`);
+        // First bid can be at base price or custom amount >= 100
+        targetBid = customAmount !== undefined && customAmount !== null ? customAmount : Math.max(100, player.basePrice || 100);
+        if (targetBid < 100) {
+          throw new Error('Bid price must be greater than or equal to ₹100.');
         }
       } else {
         // Subsequent bid
-        if (customAmount) {
+        if (customAmount !== undefined && customAmount !== null) {
           targetBid = customAmount;
+          if (targetBid < 100) {
+            throw new Error('Bid price must be greater than or equal to ₹100.');
+          }
           if (targetBid <= currentHighest) {
             throw new Error(`Bid must be higher than current bid of ${formatRupees(currentHighest)}.`);
           }
