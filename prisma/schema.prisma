@@ -75,6 +75,7 @@ model Player {
   bestBowling    String          @default("0/0")
   status         String          @default("UPCOMING") // UPCOMING, IN_AUCTION, SOLD, UNSOLD
   currentPrice   Float?
+  belongingTeamName String?
   belongingTeamId String?
   belongingTeam   Team?          @relation("BelongingTeam", fields: [belongingTeamId], references: [id], onDelete: SetNull)
   teamPlayer     TeamPlayer?

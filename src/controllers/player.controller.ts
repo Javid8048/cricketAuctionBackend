@@ -142,9 +142,25 @@ export async function registerPlayerPublic(req: Request, res: Response) {
     const basePrice = Number(data.basePrice) > 0 ? Number(data.basePrice) : 100;
     const age = Number(data.age) || (data.dob ? new Date().getFullYear() - new Date(data.dob).getFullYear() : 22);
 
-    const effectiveBelongingTeamId = (data.belongingTeamId && data.belongingTeamId !== 'NONE' && String(data.belongingTeamId).trim() !== '')
+    const manualTeamName = (data.belongingTeamName && String(data.belongingTeamName).trim() !== '')
+      ? String(data.belongingTeamName).trim()
+      : null;
+
+    let effectiveBelongingTeamId = (data.belongingTeamId && data.belongingTeamId !== 'NONE' && String(data.belongingTeamId).trim() !== '')
       ? String(data.belongingTeamId).trim()
       : (data.teamId && data.teamId !== 'NONE' && String(data.teamId).trim() !== '' ? String(data.teamId).trim() : null);
+
+    if (manualTeamName && !effectiveBelongingTeamId) {
+      const matchedTeam = await prisma.team.findFirst({
+        where: {
+          OR: [
+            { name: { equals: manualTeamName } },
+            { shortName: { equals: manualTeamName } },
+          ],
+        },
+      });
+      if (matchedTeam) effectiveBelongingTeamId = matchedTeam.id;
+    }
 
     const player = await prisma.player.create({
       data: {
@@ -173,6 +189,7 @@ export async function registerPlayerPublic(req: Request, res: Response) {
         bestBowling: data.bestBowling || '0/0',
         status: 'UPCOMING',
         currentPrice: null,
+        belongingTeamName: manualTeamName,
         belongingTeamId: effectiveBelongingTeamId,
       },
       include: {
@@ -237,13 +254,25 @@ export async function createPlayer(req: Request, res: Response) {
     });
     const sNo = playerData.sNo ? Number(playerData.sNo) : (lastPlayer?.sNo || 0) + 1;
     const basePrice = Number(playerData.basePrice) > 0 ? Number(playerData.basePrice) : 100;
-    const isAssigned = Boolean(
-      (data.belongingTeamId && data.belongingTeamId !== 'NONE' && String(data.belongingTeamId).trim() !== '') ||
-      (teamId && teamId !== 'NONE' && String(teamId).trim() !== '')
-    );
-    const effectiveBelongingTeamId = (data.belongingTeamId && data.belongingTeamId !== 'NONE' && String(data.belongingTeamId).trim() !== '')
+    const manualTeamName = (data.belongingTeamName && String(data.belongingTeamName).trim() !== '')
+      ? String(data.belongingTeamName).trim()
+      : (data.teamName && String(data.teamName).trim() !== '' ? String(data.teamName).trim() : null);
+
+    let effectiveBelongingTeamId = (data.belongingTeamId && data.belongingTeamId !== 'NONE' && String(data.belongingTeamId).trim() !== '')
       ? String(data.belongingTeamId).trim()
       : (teamId && teamId !== 'NONE' && String(teamId).trim() !== '' ? String(teamId).trim() : null);
+
+    if (manualTeamName && !effectiveBelongingTeamId) {
+      const matchedTeam = await prisma.team.findFirst({
+        where: {
+          OR: [
+            { name: { equals: manualTeamName } },
+            { shortName: { equals: manualTeamName } },
+          ],
+        },
+      });
+      if (matchedTeam) effectiveBelongingTeamId = matchedTeam.id;
+    }
 
     const player = await prisma.player.create({
       data: {
@@ -274,6 +303,7 @@ export async function createPlayer(req: Request, res: Response) {
         bestBowling: playerData.bestBowling || '0/0',
         status: 'UPCOMING',
         currentPrice: null,
+        belongingTeamName: manualTeamName,
         belongingTeamId: effectiveBelongingTeamId,
       },
       include: {
@@ -351,6 +381,28 @@ export async function updatePlayer(req: Request, res: Response) {
     }
 
     // Option 1: Player belongs to (Home Team Affiliation - independent of auction bidding)
+    if (req.body.belongingTeamName !== undefined) {
+      const bName = req.body.belongingTeamName && String(req.body.belongingTeamName).trim() !== ''
+        ? String(req.body.belongingTeamName).trim()
+        : null;
+      playerData.belongingTeamName = bName;
+
+      if (bName && !belongingTeamId) {
+        const matchedTeam = await prisma.team.findFirst({
+          where: {
+            OR: [
+              { name: { equals: bName } },
+              { shortName: { equals: bName } },
+            ],
+          },
+        });
+        if (matchedTeam) playerData.belongingTeamId = matchedTeam.id;
+        else playerData.belongingTeamId = null;
+      } else if (!bName) {
+        playerData.belongingTeamId = null;
+      }
+    }
+
     const effectiveBelongingTeamId = belongingTeamId !== undefined
       ? (belongingTeamId && belongingTeamId !== 'NONE' && String(belongingTeamId).trim() !== '' ? String(belongingTeamId).trim() : null)
       : (teamId !== undefined && soldToTeamId === undefined
