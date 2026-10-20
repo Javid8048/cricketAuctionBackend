@@ -162,45 +162,67 @@ export async function registerPlayerPublic(req: Request, res: Response) {
       if (matchedTeam) effectiveBelongingTeamId = matchedTeam.id;
     }
 
-    const player = await prisma.player.create({
-      data: {
-        sNo: sNo,
-        name: data.name.trim(),
-        profileImage: data.profileImage || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80',
-        country: data.country || 'India',
-        isOverseas: data.country ? data.country !== 'India' : false,
-        age: age,
-        dob: data.dob || null,
-        place: data.place || null,
-        phone: data.phone || null,
-        role: data.role || 'All-Rounder',
-        battingStyle: data.battingStyle || 'Right-hand bat',
-        bowlingStyle: data.bowlingStyle || 'Right-arm medium',
-        basePrice: basePrice,
-        category: data.category || 'Local Talent',
-        matches: Number(data.matches || 0),
-        runs: Number(data.runs || 0),
-        battingAvg: Number(data.battingAvg || 0),
-        strikeRate: Number(data.strikeRate || 0),
-        highestScore: Number(data.highestScore || 0),
-        wickets: Number(data.wickets || 0),
-        economy: Number(data.economy || 0),
-        bowlingAvg: Number(data.bowlingAvg || 0),
-        bestBowling: data.bestBowling || '0/0',
-        status: 'UPCOMING',
-        currentPrice: null,
-        belongingTeamName: manualTeamName,
-        belongingTeamId: effectiveBelongingTeamId,
-      },
-      include: {
-        teamPlayer: {
-          include: {
-            team: true,
+    const createData: any = {
+      sNo: sNo,
+      name: data.name.trim(),
+      profileImage: data.profileImage || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80',
+      country: data.country || 'India',
+      isOverseas: data.country ? data.country !== 'India' : false,
+      age: age,
+      dob: data.dob || null,
+      place: data.place || null,
+      phone: data.phone || null,
+      role: data.role || 'All-Rounder',
+      battingStyle: data.battingStyle || 'Right-hand bat',
+      bowlingStyle: data.bowlingStyle || 'Right-arm medium',
+      basePrice: basePrice,
+      category: data.category || 'Local Talent',
+      matches: Number(data.matches || 0),
+      runs: Number(data.runs || 0),
+      battingAvg: Number(data.battingAvg || 0),
+      strikeRate: Number(data.strikeRate || 0),
+      highestScore: Number(data.highestScore || 0),
+      wickets: Number(data.wickets || 0),
+      economy: Number(data.economy || 0),
+      bowlingAvg: Number(data.bowlingAvg || 0),
+      bestBowling: data.bestBowling || '0/0',
+      status: 'UPCOMING',
+      currentPrice: null,
+      belongingTeamName: manualTeamName,
+      belongingTeamId: effectiveBelongingTeamId,
+    };
+
+    let player;
+    try {
+      player = await prisma.player.create({
+        data: createData,
+        include: {
+          teamPlayer: {
+            include: {
+              team: true,
+            },
           },
+          belongingTeam: true,
         },
-        belongingTeam: true,
-      },
-    });
+      });
+    } catch (createErr: any) {
+      if (createErr.message && (createErr.message.includes('belongingTeamName') || createErr.message.includes('Unknown argument'))) {
+        delete createData.belongingTeamName;
+        player = await prisma.player.create({
+          data: createData,
+          include: {
+            teamPlayer: {
+              include: {
+                team: true,
+              },
+            },
+            belongingTeam: true,
+          },
+        });
+      } else {
+        throw createErr;
+      }
+    }
 
     // Invalidate auction engine cache for fast updates
     auctionEngine.invalidateCache();
@@ -274,47 +296,69 @@ export async function createPlayer(req: Request, res: Response) {
       if (matchedTeam) effectiveBelongingTeamId = matchedTeam.id;
     }
 
-    const player = await prisma.player.create({
-      data: {
-        sNo: sNo,
-        name: playerData.name,
-        profileImage:
-          playerData.profileImage ||
-          'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400&auto=format&fit=crop&q=80',
-        country: playerData.country || 'India',
-        isOverseas: playerData.country ? playerData.country !== 'India' : false,
-        age: Number(playerData.age || 24),
-        dob: playerData.dob || null,
-        place: playerData.place || null,
-        phone: playerData.phone || null,
-        role: playerData.role || 'Batter',
-        battingStyle: playerData.battingStyle || 'Right-hand bat',
-        bowlingStyle: playerData.bowlingStyle || 'Right-arm medium',
-        basePrice: basePrice,
-        category: playerData.category || 'General',
-        matches: Number(playerData.matches || 0),
-        runs: Number(playerData.runs || 0),
-        battingAvg: Number(playerData.battingAvg || 0),
-        strikeRate: Number(playerData.strikeRate || 0),
-        highestScore: Number(playerData.highestScore || 0),
-        wickets: Number(playerData.wickets || 0),
-        economy: Number(playerData.economy || 0),
-        bowlingAvg: Number(playerData.bowlingAvg || 0),
-        bestBowling: playerData.bestBowling || '0/0',
-        status: 'UPCOMING',
-        currentPrice: null,
-        belongingTeamName: manualTeamName,
-        belongingTeamId: effectiveBelongingTeamId,
-      },
-      include: {
-        teamPlayer: {
-          include: {
-            team: true,
+    const createData: any = {
+      sNo: sNo,
+      name: playerData.name,
+      profileImage:
+        playerData.profileImage ||
+        'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400&auto=format&fit=crop&q=80',
+      country: playerData.country || 'India',
+      isOverseas: playerData.country ? playerData.country !== 'India' : false,
+      age: Number(playerData.age || 24),
+      dob: playerData.dob || null,
+      place: playerData.place || null,
+      phone: playerData.phone || null,
+      role: playerData.role || 'Batter',
+      battingStyle: playerData.battingStyle || 'Right-hand bat',
+      bowlingStyle: playerData.bowlingStyle || 'Right-arm medium',
+      basePrice: basePrice,
+      category: playerData.category || 'General',
+      matches: Number(playerData.matches || 0),
+      runs: Number(playerData.runs || 0),
+      battingAvg: Number(playerData.battingAvg || 0),
+      strikeRate: Number(playerData.strikeRate || 0),
+      highestScore: Number(playerData.highestScore || 0),
+      wickets: Number(playerData.wickets || 0),
+      economy: Number(playerData.economy || 0),
+      bowlingAvg: Number(playerData.bowlingAvg || 0),
+      bestBowling: playerData.bestBowling || '0/0',
+      status: 'UPCOMING',
+      currentPrice: null,
+      belongingTeamName: manualTeamName,
+      belongingTeamId: effectiveBelongingTeamId,
+    };
+
+    let player;
+    try {
+      player = await prisma.player.create({
+        data: createData,
+        include: {
+          teamPlayer: {
+            include: {
+              team: true,
+            },
           },
+          belongingTeam: true,
         },
-        belongingTeam: true,
-      },
-    });
+      });
+    } catch (createErr: any) {
+      if (createErr.message && (createErr.message.includes('belongingTeamName') || createErr.message.includes('Unknown argument'))) {
+        delete createData.belongingTeamName;
+        player = await prisma.player.create({
+          data: createData,
+          include: {
+            teamPlayer: {
+              include: {
+                team: true,
+              },
+            },
+            belongingTeam: true,
+          },
+        });
+      } else {
+        throw createErr;
+      }
+    }
 
     // Invalidate auction engine cache for fast updates
     auctionEngine.invalidateCache();
@@ -366,6 +410,9 @@ export async function updatePlayer(req: Request, res: Response) {
       id: _id,
       teamId,
       belongingTeamId,
+      belongingTeam,
+      team,
+      squad,
       soldToTeamId,
       soldPrice,
       ...playerData
@@ -381,33 +428,31 @@ export async function updatePlayer(req: Request, res: Response) {
     }
 
     // Option 1: Player belongs to (Home Team Affiliation - independent of auction bidding)
+    let manualTeamName: string | null | undefined = undefined;
     if (req.body.belongingTeamName !== undefined) {
-      const bName = req.body.belongingTeamName && String(req.body.belongingTeamName).trim() !== ''
+      manualTeamName = req.body.belongingTeamName && String(req.body.belongingTeamName).trim() !== ''
         ? String(req.body.belongingTeamName).trim()
         : null;
-      playerData.belongingTeamName = bName;
-
-      if (bName && !belongingTeamId) {
-        const matchedTeam = await prisma.team.findFirst({
-          where: {
-            OR: [
-              { name: { equals: bName } },
-              { shortName: { equals: bName } },
-            ],
-          },
-        });
-        if (matchedTeam) playerData.belongingTeamId = matchedTeam.id;
-        else playerData.belongingTeamId = null;
-      } else if (!bName) {
-        playerData.belongingTeamId = null;
-      }
+      playerData.belongingTeamName = manualTeamName;
     }
 
-    const effectiveBelongingTeamId = belongingTeamId !== undefined
+    let effectiveBelongingTeamId = belongingTeamId !== undefined
       ? (belongingTeamId && belongingTeamId !== 'NONE' && String(belongingTeamId).trim() !== '' ? String(belongingTeamId).trim() : null)
       : (teamId !== undefined && soldToTeamId === undefined
           ? (teamId && teamId !== 'NONE' && String(teamId).trim() !== '' ? String(teamId).trim() : null)
           : undefined);
+
+    if (manualTeamName && !effectiveBelongingTeamId) {
+      const matchedTeam = await prisma.team.findFirst({
+        where: {
+          OR: [
+            { name: { equals: manualTeamName } },
+            { shortName: { equals: manualTeamName } },
+          ],
+        },
+      });
+      if (matchedTeam) effectiveBelongingTeamId = matchedTeam.id;
+    }
 
     if (effectiveBelongingTeamId !== undefined) {
       playerData.belongingTeamId = effectiveBelongingTeamId;
@@ -509,18 +554,45 @@ export async function updatePlayer(req: Request, res: Response) {
     if (playerData.economy !== undefined) playerData.economy = Number(playerData.economy);
     if (playerData.bowlingAvg !== undefined) playerData.bowlingAvg = Number(playerData.bowlingAvg);
 
-    const player = await prisma.player.update({
-      where: { id },
-      data: playerData,
-      include: {
-        teamPlayer: {
-          include: {
-            team: true,
+    // Remove any relation artifacts that may have been sent in payload
+    delete (playerData as any).team;
+    delete (playerData as any).squad;
+    delete (playerData as any).belongingTeam;
+
+    let player;
+    try {
+      player = await prisma.player.update({
+        where: { id },
+        data: playerData,
+        include: {
+          teamPlayer: {
+            include: {
+              team: true,
+            },
           },
+          belongingTeam: true,
         },
-        belongingTeam: true,
-      },
-    });
+      });
+    } catch (err: any) {
+      // If Prisma client rejects belongingTeamName as unknown argument or column missing, strip and retry
+      if (err.message && (err.message.includes('belongingTeamName') || err.message.includes('Unknown argument'))) {
+        delete (playerData as any).belongingTeamName;
+        player = await prisma.player.update({
+          where: { id },
+          data: playerData,
+          include: {
+            teamPlayer: {
+              include: {
+                team: true,
+              },
+            },
+            belongingTeam: true,
+          },
+        });
+      } else {
+        throw err;
+      }
+    }
 
     // Invalidate auction engine cache for fast updates
     auctionEngine.invalidateCache();
