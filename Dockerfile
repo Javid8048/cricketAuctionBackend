@@ -7,6 +7,7 @@ WORKDIR /app
 
 # Define build environment variables
 ENV PORT=5000 \
+    DATABASE_URL="file:./dev.db" \
     JWT_SECRET="cricket-auction-arena-production-secret-2026"
 
 # Copy package descriptors and prisma schema
@@ -27,4 +28,4 @@ ENV NODE_ENV=production
 EXPOSE 5000
 
 # At runtime, sync database tables, verify seed data, and start server
-CMD ["sh", "-c", "npx prisma db push --skip-generate --accept-data-loss && npx ts-node prisma/seed.ts && node dist/server.js"]
+CMD ["sh", "-c", "export DATABASE_URL=${DATABASE_URL:-file:./dev.db} && case \"$DATABASE_URL\" in file:*) ;; *) export DATABASE_URL=\"file:./dev.db\" ;; esac && npx prisma db push --skip-generate --accept-data-loss && npx ts-node prisma/seed.ts && node dist/server.js"]
