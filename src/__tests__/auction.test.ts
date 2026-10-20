@@ -341,7 +341,7 @@ describe('Cricket Auction Arena - Core Bidding & Rules Tests', { timeout: 60000 
     // Verify player is now in Team 2's tournament squad, while belongingTeamId remains Team 1
     const finalPlayer = await prisma.player.findUnique({
       where: { id: affiliatedPlayer.id },
-      include: { teamPlayer: { include: { team: true } }, belongingTeam: true },
+      include: { teamPlayer: { include: { team: true } } },
     });
 
     expect(finalPlayer!.status).toBe('SOLD');

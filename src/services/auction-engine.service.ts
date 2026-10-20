@@ -121,7 +121,6 @@ export class AuctionEngine {
               team: true,
             },
           },
-          belongingTeam: true,
         },
         orderBy: [{ sNo: 'asc' }, { name: 'asc' }],
       }),
@@ -178,7 +177,6 @@ export class AuctionEngine {
         ? this.prisma.player.findUnique({
             where: { id: auction.activePlayerId },
             include: {
-              belongingTeam: true,
               teamPlayer: {
                 include: {
                   team: true,

@@ -30,7 +30,7 @@ export async function saveDatabaseSnapshot(): Promise<void> {
 
     // Query all entities concurrently in parallel
     const [players, teams, teamPlayers, users, auctions, auctionPlayers, bids] = await Promise.all([
-      prisma.player.findMany({ include: { teamPlayer: true, belongingTeam: true } }),
+      prisma.player.findMany({ include: { teamPlayer: true } }),
       prisma.team.findMany({ include: { squad: true } }),
       prisma.teamPlayer.findMany(),
       prisma.user.findMany(),

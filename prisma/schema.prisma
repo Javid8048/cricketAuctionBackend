@@ -39,7 +39,6 @@ model Team {
   maxOverseas     Int             @default(8)
   user            User?
   squad           TeamPlayer[]
-  nominatedPlayers Player[]      @relation("BelongingTeam")
   bids            Bid[]
   wonAuctions     AuctionPlayer[] @relation("WinningTeam")
   createdAt       DateTime        @default(now())
@@ -75,9 +74,8 @@ model Player {
   bestBowling    String          @default("0/0")
   status         String          @default("UPCOMING") // UPCOMING, IN_AUCTION, SOLD, UNSOLD
   currentPrice   Float?
-  belongingTeamName String?
   belongingTeamId String?
-  belongingTeam   Team?          @relation("BelongingTeam", fields: [belongingTeamId], references: [id], onDelete: SetNull)
+  belongingTeamName String?
   teamPlayer     TeamPlayer?
   auctionPlayers AuctionPlayer[]
   bids           Bid[]

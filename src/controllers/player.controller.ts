@@ -68,7 +68,6 @@ export async function getPlayers(req: Request, res: Response) {
             team: true,
           },
         },
-        belongingTeam: true,
       },
     });
 
@@ -95,7 +94,6 @@ export async function getPlayerById(req: Request, res: Response) {
             team: true,
           },
         },
-        belongingTeam: true,
         bids: {
           orderBy: { createdAt: 'desc' },
           include: {
@@ -142,25 +140,9 @@ export async function registerPlayerPublic(req: Request, res: Response) {
     const basePrice = Number(data.basePrice) > 0 ? Number(data.basePrice) : 100;
     const age = Number(data.age) || (data.dob ? new Date().getFullYear() - new Date(data.dob).getFullYear() : 22);
 
-    const manualTeamName = (data.belongingTeamName && String(data.belongingTeamName).trim() !== '')
-      ? String(data.belongingTeamName).trim()
-      : null;
-
-    let effectiveBelongingTeamId = (data.belongingTeamId && data.belongingTeamId !== 'NONE' && String(data.belongingTeamId).trim() !== '')
+    const rawTeam = (data.belongingTeamId && data.belongingTeamId !== 'NONE' && String(data.belongingTeamId).trim() !== '')
       ? String(data.belongingTeamId).trim()
-      : (data.teamId && data.teamId !== 'NONE' && String(data.teamId).trim() !== '' ? String(data.teamId).trim() : null);
-
-    if (manualTeamName && !effectiveBelongingTeamId) {
-      const matchedTeam = await prisma.team.findFirst({
-        where: {
-          OR: [
-            { name: { equals: manualTeamName } },
-            { shortName: { equals: manualTeamName } },
-          ],
-        },
-      });
-      if (matchedTeam) effectiveBelongingTeamId = matchedTeam.id;
-    }
+      : (data.belongingTeamName && String(data.belongingTeamName).trim() !== '' ? String(data.belongingTeamName).trim() : null);
 
     const createData: any = {
       sNo: sNo,
@@ -188,8 +170,8 @@ export async function registerPlayerPublic(req: Request, res: Response) {
       bestBowling: data.bestBowling || '0/0',
       status: 'UPCOMING',
       currentPrice: null,
-      belongingTeamName: manualTeamName,
-      belongingTeamId: effectiveBelongingTeamId,
+      belongingTeamName: rawTeam,
+      belongingTeamId: rawTeam,
     };
 
     let player;
@@ -202,7 +184,6 @@ export async function registerPlayerPublic(req: Request, res: Response) {
               team: true,
             },
           },
-          belongingTeam: true,
         },
       });
     } catch (createErr: any) {
@@ -216,7 +197,6 @@ export async function registerPlayerPublic(req: Request, res: Response) {
                 team: true,
               },
             },
-            belongingTeam: true,
           },
         });
       } else {
@@ -276,25 +256,11 @@ export async function createPlayer(req: Request, res: Response) {
     });
     const sNo = playerData.sNo ? Number(playerData.sNo) : (lastPlayer?.sNo || 0) + 1;
     const basePrice = Number(playerData.basePrice) > 0 ? Number(playerData.basePrice) : 100;
-    const manualTeamName = (data.belongingTeamName && String(data.belongingTeamName).trim() !== '')
-      ? String(data.belongingTeamName).trim()
-      : (data.teamName && String(data.teamName).trim() !== '' ? String(data.teamName).trim() : null);
-
-    let effectiveBelongingTeamId = (data.belongingTeamId && data.belongingTeamId !== 'NONE' && String(data.belongingTeamId).trim() !== '')
+    const rawTeam = (data.belongingTeamId && data.belongingTeamId !== 'NONE' && String(data.belongingTeamId).trim() !== '')
       ? String(data.belongingTeamId).trim()
-      : (teamId && teamId !== 'NONE' && String(teamId).trim() !== '' ? String(teamId).trim() : null);
-
-    if (manualTeamName && !effectiveBelongingTeamId) {
-      const matchedTeam = await prisma.team.findFirst({
-        where: {
-          OR: [
-            { name: { equals: manualTeamName } },
-            { shortName: { equals: manualTeamName } },
-          ],
-        },
-      });
-      if (matchedTeam) effectiveBelongingTeamId = matchedTeam.id;
-    }
+      : (data.belongingTeamName && String(data.belongingTeamName).trim() !== ''
+          ? String(data.belongingTeamName).trim()
+          : (data.teamName && String(data.teamName).trim() !== '' ? String(data.teamName).trim() : null));
 
     const createData: any = {
       sNo: sNo,
@@ -324,8 +290,8 @@ export async function createPlayer(req: Request, res: Response) {
       bestBowling: playerData.bestBowling || '0/0',
       status: 'UPCOMING',
       currentPrice: null,
-      belongingTeamName: manualTeamName,
-      belongingTeamId: effectiveBelongingTeamId,
+      belongingTeamName: rawTeam,
+      belongingTeamId: rawTeam,
     };
 
     let player;
@@ -338,7 +304,6 @@ export async function createPlayer(req: Request, res: Response) {
               team: true,
             },
           },
-          belongingTeam: true,
         },
       });
     } catch (createErr: any) {
@@ -352,7 +317,6 @@ export async function createPlayer(req: Request, res: Response) {
                 team: true,
               },
             },
-            belongingTeam: true,
           },
         });
       } else {
@@ -427,35 +391,21 @@ export async function updatePlayer(req: Request, res: Response) {
       return res.status(404).json({ error: 'Player not found.' });
     }
 
-    // Option 1: Player belongs to (Home Team Affiliation - independent of auction bidding)
-    let manualTeamName: string | null | undefined = undefined;
-    if (req.body.belongingTeamName !== undefined) {
-      manualTeamName = req.body.belongingTeamName && String(req.body.belongingTeamName).trim() !== ''
+    // Option 1: Player belongs to (Home Team Affiliation - pure text, no foreign key)
+    let typedTeam: string | null | undefined = undefined;
+    if (belongingTeamId !== undefined) {
+      typedTeam = belongingTeamId && belongingTeamId !== 'NONE' && String(belongingTeamId).trim() !== ''
+        ? String(belongingTeamId).trim()
+        : null;
+    } else if (req.body.belongingTeamName !== undefined) {
+      typedTeam = req.body.belongingTeamName && req.body.belongingTeamName !== 'NONE' && String(req.body.belongingTeamName).trim() !== ''
         ? String(req.body.belongingTeamName).trim()
         : null;
-      playerData.belongingTeamName = manualTeamName;
     }
 
-    let effectiveBelongingTeamId = belongingTeamId !== undefined
-      ? (belongingTeamId && belongingTeamId !== 'NONE' && String(belongingTeamId).trim() !== '' ? String(belongingTeamId).trim() : null)
-      : (teamId !== undefined && soldToTeamId === undefined
-          ? (teamId && teamId !== 'NONE' && String(teamId).trim() !== '' ? String(teamId).trim() : null)
-          : undefined);
-
-    if (manualTeamName && !effectiveBelongingTeamId) {
-      const matchedTeam = await prisma.team.findFirst({
-        where: {
-          OR: [
-            { name: { equals: manualTeamName } },
-            { shortName: { equals: manualTeamName } },
-          ],
-        },
-      });
-      if (matchedTeam) effectiveBelongingTeamId = matchedTeam.id;
-    }
-
-    if (effectiveBelongingTeamId !== undefined) {
-      playerData.belongingTeamId = effectiveBelongingTeamId;
+    if (typedTeam !== undefined) {
+      playerData.belongingTeamId = typedTeam;
+      playerData.belongingTeamName = typedTeam;
     }
 
     // Option 2: Player sold to (Tournament Drafted Team in Auction with purse deduction)
@@ -570,7 +520,6 @@ export async function updatePlayer(req: Request, res: Response) {
               team: true,
             },
           },
-          belongingTeam: true,
         },
       });
     } catch (err: any) {
@@ -586,7 +535,6 @@ export async function updatePlayer(req: Request, res: Response) {
                 team: true,
               },
             },
-            belongingTeam: true,
           },
         });
       } else {
