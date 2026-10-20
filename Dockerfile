@@ -5,9 +5,9 @@ RUN apk add --no-cache openssl libc6-compat
 
 WORKDIR /app
 
-# Define build environment variables
+# Define build environment variables (dummy URL ensures prisma generate compiles cleanly)
 ENV PORT=5000 \
-    DATABASE_URL="file:./dev.db" \
+    DATABASE_URL="postgresql://dummy:dummy@localhost:5432/dummy" \
     JWT_SECRET="cricket-auction-arena-production-secret-2026"
 
 # Copy package descriptors and prisma schema
@@ -27,5 +27,5 @@ ENV NODE_ENV=production
 
 EXPOSE 5000
 
-# At runtime, sync database tables, verify seed data, and start server
-CMD ["sh", "-c", "export DATABASE_URL=${DATABASE_URL:-file:./dev.db} && case \"$DATABASE_URL\" in file:*) ;; *) export DATABASE_URL=\"file:./dev.db\" ;; esac && npx prisma db push --skip-generate --accept-data-loss && npx ts-node prisma/seed.ts && node dist/server.js"]
+# At runtime, sync database tables non-destructively, verify seed data, and start server
+CMD ["sh", "-c", "npx prisma db push --skip-generate && npx ts-node prisma/seed.ts && node dist/server.js"]
