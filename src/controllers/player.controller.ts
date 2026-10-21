@@ -375,32 +375,35 @@ export async function createPlayer(req: Request, res: Response) {
 }
 
 export async function updatePlayer(req: Request, res: Response) {
-  try {
-    const { id } = req.params;
-    const {
-      teamPlayer,
-      bids,
-      auctionPlayers,
-      createdAt,
-      updatedAt,
-      id: _id,
-      teamId,
-      belongingTeamId,
-      belongingTeam,
-      team,
-      squad,
-      soldToTeamId,
-      soldPrice,
-      ...playerData
-    } = req.body;
+  const { id } = req.params;
+  const {
+    teamPlayer,
+    bids,
+    auctionPlayers,
+    createdAt,
+    updatedAt,
+    id: _id,
+    teamId,
+    belongingTeamId,
+    belongingTeam,
+    team,
+    squad,
+    soldToTeamId,
+    soldPrice,
+    ...playerData
+  } = req.body;
 
+  try {
     const existingPlayer = await prisma.player.findUnique({
       where: { id },
       include: { teamPlayer: true },
     });
 
     if (!existingPlayer) {
-      return res.status(404).json({ error: 'Player not found.' });
+      // Fallback directly to live state
+      const updated = updateLivePlayer(id, req.body);
+      auctionEngine.invalidateCache();
+      return res.json(updated);
     }
 
     // Option 1: Player belongs to (Home Team Affiliation - pure text, no foreign key)
@@ -554,13 +557,14 @@ export async function updatePlayer(req: Request, res: Response) {
       }
     }
 
-    // Invalidate auction engine cache for fast updates
-    auctionEngine.invalidateCache();
+    // Sync in-memory live state
+    try {
+      updateLivePlayer(id, req.body);
+    } catch (_) {}
 
-    // Return instant HTTP response
+    auctionEngine.invalidateCache();
     res.json(player);
 
-    // Asynchronous broadcast & debounced snapshot in background
     setImmediate(async () => {
       try {
         await auctionEngine.broadcastState();
@@ -568,25 +572,30 @@ export async function updatePlayer(req: Request, res: Response) {
       triggerDebouncedSnapshot();
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message || 'Failed to update player.' });
+    console.warn('[UpdatePlayer Warning - Falling back to live state]:', error.message);
+    try {
+      const updated = updateLivePlayer(id, req.body);
+      auctionEngine.invalidateCache();
+      return res.json(updated);
+    } catch (fallbackErr: any) {
+      res.status(500).json({ error: fallbackErr.message || error.message || 'Failed to update player.' });
+    }
   }
 }
 
 export async function deletePlayer(req: Request, res: Response) {
+  const { id } = req.params;
   try {
-    const { id } = req.params;
-
     await prisma.player.delete({
       where: { id },
     });
+    try {
+      deleteLivePlayer(id);
+    } catch (_) {}
 
-    // Invalidate auction engine cache for fast updates
     auctionEngine.invalidateCache();
-
-    // Return instant HTTP response
     res.json({ message: 'Player removed successfully.' });
 
-    // Asynchronous broadcast & debounced snapshot in background
     setImmediate(async () => {
       try {
         await auctionEngine.broadcastState();
@@ -594,6 +603,12 @@ export async function deletePlayer(req: Request, res: Response) {
       triggerDebouncedSnapshot();
     });
   } catch (error: any) {
+    console.warn('[DeletePlayer Warning - Falling back to live state]:', error.message);
+    const removed = deleteLivePlayer(id);
+    if (removed) {
+      auctionEngine.invalidateCache();
+      return res.json({ message: 'Player removed successfully.' });
+    }
     res.status(500).json({ error: error.message || 'Failed to remove player.' });
   }
 }

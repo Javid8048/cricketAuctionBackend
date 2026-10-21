@@ -60,7 +60,7 @@ export function createApp() {
       ]);
       res.json({
         status: 'ok',
-        version: '1.1.0',
+        version: '1.1.1',
         database: 'connected',
         netProbe,
         hostsTail,
@@ -71,7 +71,7 @@ export function createApp() {
       // Return 200 with status: 'ok' so Render health check passes and the web server stays alive!
       res.json({
         status: 'ok',
-        version: '1.1.0',
+        version: '1.1.1',
         database: 'connecting',
         netProbe,
         hostsTail,
