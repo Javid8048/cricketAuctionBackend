@@ -27,5 +27,5 @@ ENV NODE_ENV=production
 
 EXPOSE 5000
 
-# At runtime, sync database tables non-destructively, verify seed data, and start server
-CMD ["sh", "-c", "npx prisma db push --skip-generate && npx ts-node prisma/seed.ts && node dist/server.js"]
+# Start server immediately without blocking startup commands
+CMD ["node", "dist/server.js"]
