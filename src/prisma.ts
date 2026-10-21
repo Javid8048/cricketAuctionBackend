@@ -8,6 +8,12 @@ export function getSanitizedDatabaseUrl(): string | undefined {
 
   // If this is a PostgreSQL connection (e.g. Neon)
   if (url.startsWith('postgresql://') || url.startsWith('postgres://')) {
+    // Neon PgBouncer pooler (-pooler) often fails with Prisma due to transaction mode
+    // Direct endpoint (without -pooler) connects directly to PostgreSQL compute
+    if (url.includes('-pooler.')) {
+      url = url.replace('-pooler.', '.');
+    }
+
     const hasQuery = url.includes('?');
     const separator = hasQuery ? '&' : '?';
 
@@ -16,17 +22,12 @@ export function getSanitizedDatabaseUrl(): string | undefined {
       url += `${separator}sslmode=require`;
     }
 
-    // 2. Ensure pgbouncer=true for Neon PgBouncer pooler
-    if (url.includes('-pooler.') && !url.includes('pgbouncer=')) {
-      url += `&pgbouncer=true`;
-    }
-
-    // 3. Ensure connect_timeout=30 to handle Neon scale-to-zero cold-starts
+    // 2. Ensure connect_timeout=30 to handle Neon scale-to-zero cold-starts
     if (!url.includes('connect_timeout=')) {
       url += `&connect_timeout=30`;
     }
 
-    // 4. Ensure pool_timeout=30
+    // 3. Ensure pool_timeout=30
     if (!url.includes('pool_timeout=')) {
       url += `&pool_timeout=30`;
     }
@@ -36,6 +37,11 @@ export function getSanitizedDatabaseUrl(): string | undefined {
 }
 
 const dbUrl = getSanitizedDatabaseUrl();
+
+if (dbUrl) {
+  const masked = dbUrl.replace(/:([^:@]+)@/, ':****@');
+  console.log(`[Database Configuration] Connecting to: ${masked}`);
+}
 
 export const prisma = new PrismaClient(
   dbUrl
