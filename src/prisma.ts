@@ -1,3 +1,8 @@
+import dns from 'dns';
+try {
+  dns.setDefaultResultOrder('ipv4first');
+} catch (e) {}
+
 import { PrismaClient } from '@prisma/client';
 
 export function getSanitizedDatabaseUrl(): string | undefined {
@@ -8,8 +13,7 @@ export function getSanitizedDatabaseUrl(): string | undefined {
 
   // If this is a PostgreSQL connection (e.g. Neon)
   if (url.startsWith('postgresql://') || url.startsWith('postgres://')) {
-    // Neon PgBouncer pooler (-pooler) often fails with Prisma due to transaction mode
-    // Direct endpoint (without -pooler) connects directly to PostgreSQL compute
+    // Direct endpoint (without -pooler) is standard Postgres, fully compatible with Prisma without transaction mode constraints
     if (url.includes('-pooler.')) {
       url = url.replace('-pooler.', '.');
     }

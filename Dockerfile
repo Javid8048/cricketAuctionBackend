@@ -1,7 +1,7 @@
-FROM node:20-alpine
+FROM node:20-slim
 
-# Install OpenSSL and libc compatibility required by Prisma on Alpine Linux
-RUN apk add --no-cache openssl libc6-compat
+# Install OpenSSL and CA certificates for secure TLS to Neon PostgreSQL
+RUN apt-get update && apt-get install -y openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -14,7 +14,7 @@ ENV PORT=5000 \
 COPY package*.json ./
 COPY prisma ./prisma/
 
-# Install all dependencies (including devDependencies so tsc & ts-node are present)
+# Install all dependencies (including devDependencies so tsc is present)
 RUN npm install --include=dev
 RUN npx prisma generate
 
@@ -27,5 +27,5 @@ ENV NODE_ENV=production
 
 EXPOSE 5000
 
-# Start server immediately without blocking startup commands
+# Start server immediately
 CMD ["node", "dist/server.js"]

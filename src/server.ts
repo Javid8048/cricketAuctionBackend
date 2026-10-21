@@ -1,10 +1,15 @@
-import http from 'http';
+import dns from 'dns';
+try {
+  dns.setDefaultResultOrder('ipv4first');
+} catch (e) {}
+
 import dotenv from 'dotenv';
+dotenv.config();
+
+import http from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import { createApp } from './app';
 import { setupSocketHandlers } from './websocket/socket.handler';
-
-dotenv.config();
 
 const PORT = process.env.PORT || 5000;
 const app = createApp();
