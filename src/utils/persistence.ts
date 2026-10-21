@@ -201,3 +201,23 @@ export async function restoreDatabaseIfEmpty(): Promise<boolean> {
     return false;
   }
 }
+
+
+/**
+ * Safely reads the durable snapshot from latest-backup.json as a high-availability fallback.
+ */
+export function getFallbackBackupData(): { players: any[]; teams: any[] } {
+  try {
+    const backupDir = path.join(__dirname, '../../backups');
+    const latestFile = path.join(backupDir, 'latest-backup.json');
+    if (fs.existsSync(latestFile)) {
+      const data = JSON.parse(fs.readFileSync(latestFile, 'utf8'));
+      const players = data.players?.value || data.players || [];
+      const teams = data.teams?.value || data.teams || [];
+      return { players, teams };
+    }
+  } catch (err) {
+    console.error('[FALLBACK BACKUP READ ERROR]', err);
+  }
+  return { players: [], teams: [] };
+}

@@ -27,7 +27,7 @@ export function createApp() {
       ]);
       res.json({
         status: 'ok',
-        version: '1.0.4',
+        version: '1.0.6',
         database: 'connected',
         timestamp: new Date().toISOString(),
       });
@@ -36,7 +36,7 @@ export function createApp() {
       // Return 200 with status: 'ok' so Render health check passes and the web server stays alive!
       res.json({
         status: 'ok',
-        version: '1.0.4',
+        version: '1.0.6',
         database: 'connecting',
         warning: err.message || 'Database warming up',
         timestamp: new Date().toISOString(),

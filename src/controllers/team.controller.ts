@@ -3,7 +3,7 @@ import { prisma } from '../prisma';
 import bcrypt from 'bcryptjs';
 import { formatRupees } from '../utils/currency';
 import { auctionEngine } from './auction.controller';
-import { triggerDebouncedSnapshot } from '../utils/persistence';
+import { triggerDebouncedSnapshot, getFallbackBackupData } from '../utils/persistence';
 
 // In-memory cache for ultra-fast teams list retrieval
 let cachedTeamsData: any[] | null = null;
@@ -65,6 +65,11 @@ export async function getTeams(req: Request, res: Response) {
 
     res.json(formatted);
   } catch (error: any) {
+    console.warn('[GetTeams Warning - Serving from durable snapshot backup]:', error.message);
+    const { teams } = getFallbackBackupData();
+    if (teams && teams.length > 0) {
+      return res.json(teams);
+    }
     res.status(500).json({ error: error.message || 'Failed to fetch teams.' });
   }
 }

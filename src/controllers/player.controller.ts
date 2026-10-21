@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { prisma } from '../prisma';
 import { auctionEngine } from './auction.controller';
-import { triggerDebouncedSnapshot } from '../utils/persistence';
+import { triggerDebouncedSnapshot, getFallbackBackupData } from '../utils/persistence';
 
 // In-memory cache for ultra-fast player list retrieval
 let cachedPlayersData: any[] | null = null;
@@ -78,6 +78,11 @@ export async function getPlayers(req: Request, res: Response) {
 
     res.json(players);
   } catch (error: any) {
+    console.warn('[GetPlayers Warning - Serving from durable snapshot backup]:', error.message);
+    const { players } = getFallbackBackupData();
+    if (players && players.length > 0) {
+      return res.json(players);
+    }
     res.status(500).json({ error: error.message || 'Failed to fetch players.' });
   }
 }
