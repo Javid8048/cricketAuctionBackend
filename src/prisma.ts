@@ -4,6 +4,8 @@ try {
 } catch (e) {}
 
 import { PrismaClient } from '@prisma/client';
+import { Pool } from 'pg';
+import { PrismaPg } from '@prisma/adapter-pg';
 
 export function getSanitizedDatabaseUrl(): string | undefined {
   let url = process.env.DATABASE_URL;
@@ -13,7 +15,7 @@ export function getSanitizedDatabaseUrl(): string | undefined {
 
   // If this is a PostgreSQL connection (e.g. Neon)
   if (url.startsWith('postgresql://') || url.startsWith('postgres://')) {
-    // Direct endpoint (without -pooler) is standard Postgres, fully compatible with Prisma without transaction mode constraints
+    // Both direct and -pooler work; direct endpoint avoids prepared statements issues with PgBouncer
     if (url.includes('-pooler.')) {
       url = url.replace('-pooler.', '.');
     }
@@ -42,19 +44,34 @@ export function getSanitizedDatabaseUrl(): string | undefined {
 
 const dbUrl = getSanitizedDatabaseUrl();
 
-if (dbUrl) {
-  const masked = dbUrl.replace(/:([^:@]+)@/, ':****@');
-  console.log(`[Database Configuration] Connecting to: ${masked}`);
+function initializePrisma(): PrismaClient {
+  if (dbUrl && (dbUrl.startsWith('postgresql://') || dbUrl.startsWith('postgres://'))) {
+    const masked = dbUrl.replace(/:([^:@]+)@/, ':****@');
+    console.log(`[Database Configuration] Connecting via Node pg adapter to: ${masked}`);
+
+    const pool = new Pool({
+      connectionString: dbUrl,
+      connectionTimeoutMillis: 30000,
+      ssl: {
+        rejectUnauthorized: false,
+      },
+    });
+
+    const adapter = new PrismaPg(pool);
+    return new PrismaClient({ adapter });
+  }
+
+  return new PrismaClient(
+    dbUrl
+      ? {
+          datasources: {
+            db: {
+              url: dbUrl,
+            },
+          },
+        }
+      : undefined
+  );
 }
 
-export const prisma = new PrismaClient(
-  dbUrl
-    ? {
-        datasources: {
-          db: {
-            url: dbUrl,
-          },
-        },
-      }
-    : undefined
-);
+export const prisma = initializePrisma();
