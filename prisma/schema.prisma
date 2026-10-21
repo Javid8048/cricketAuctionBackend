@@ -34,6 +34,7 @@ model Team {
   primaryColor    String          @default("#3B82F6")
   secondaryColor  String          @default("#1E40AF")
   logoText        String
+  logoUrl         String?
   totalPurse      Float           @default(15000) // ₹15,000 standard tournament purse
   remainingPurse  Float           @default(15000)
   maxSquadSize    Int             @default(12)    // 12 players limit

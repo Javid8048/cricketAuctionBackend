@@ -436,6 +436,52 @@ export function createLivePlayer(createData: any): any {
 }
 
 /**
+ * Updates a team in live state and persists to latest-backup.json
+ */
+export function updateLiveTeam(id: string, updates: any): any {
+  const teams = getRawLiveTeams();
+  const index = teams.findIndex((t) => t.id === id);
+  if (index === -1) {
+    throw new Error(`Team ${id} not found.`);
+  }
+
+  const existing = teams[index];
+  const updatedTeam = {
+    ...existing,
+    ...updates,
+    logoUrl: updates.logoUrl !== undefined ? (updates.logoUrl || null) : existing.logoUrl,
+    updatedAt: new Date().toISOString(),
+  };
+
+  teams[index] = updatedTeam;
+  persistLiveState();
+  return updatedTeam;
+}
+
+/**
+ * Creates a team in live state and persists to latest-backup.json
+ */
+export function createLiveTeam(createData: any): any {
+  const teams = getRawLiveTeams();
+  const newTeam = {
+    id: createData.id || `team-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+    ...createData,
+    logoUrl: createData.logoUrl || null,
+    totalPurse: Number(createData.totalPurse) || 15000,
+    remainingPurse: Number(createData.remainingPurse || createData.totalPurse) || 15000,
+    maxSquadSize: Number(createData.maxSquadSize) || 12,
+    maxOverseas: Number(createData.maxOverseas) || 4,
+    squad: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  teams.push(newTeam);
+  persistLiveState();
+  return newTeam;
+}
+
+/**
  * Safely reads the durable snapshot from latest-backup.json as a high-availability fallback.
  */
 export function getFallbackBackupData(): { players: any[]; teams: any[] } {

@@ -3,7 +3,7 @@ import { prisma } from '../prisma';
 import bcrypt from 'bcryptjs';
 import { formatRupees } from '../utils/currency';
 import { auctionEngine } from './auction.controller';
-import { triggerDebouncedSnapshot, getFallbackBackupData, getLiveTeams } from '../utils/persistence';
+import { triggerDebouncedSnapshot, getFallbackBackupData, getLiveTeams, updateLiveTeam, createLiveTeam } from '../utils/persistence';
 
 // In-memory cache for ultra-fast teams list retrieval
 let cachedTeamsData: any[] | null = null;
@@ -151,6 +151,7 @@ export async function createTeam(req: Request, res: Response) {
         primaryColor: data.primaryColor || '#3B82F6',
         secondaryColor: data.secondaryColor || '#1E40AF',
         logoText: data.shortName || data.name.substring(0, 2).toUpperCase(),
+        logoUrl: data.logoUrl || null,
         totalPurse: initialPurse,
         remainingPurse: initialPurse,
         maxSquadSize: squadLimit,
@@ -210,7 +211,14 @@ export async function createTeam(req: Request, res: Response) {
       triggerDebouncedSnapshot();
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message || 'Failed to create team.' });
+    console.warn('[CreateTeam Warning - Falling back to live state]:', error.message);
+    try {
+      const newTeam = createLiveTeam(req.body);
+      auctionEngine.invalidateCache();
+      return res.status(201).json(newTeam);
+    } catch (fallbackErr: any) {
+      res.status(500).json({ error: fallbackErr.message || error.message || 'Failed to create team.' });
+    }
   }
 }
 
@@ -244,6 +252,7 @@ export async function updateTeam(req: Request, res: Response) {
         primaryColor: data.primaryColor,
         secondaryColor: data.secondaryColor,
         logoText: data.logoText,
+        logoUrl: data.logoUrl !== undefined ? (data.logoUrl || null) : existing.logoUrl,
         totalPurse: newTotalPurse,
         remainingPurse: newRemainingPurse,
         maxSquadSize: data.maxSquadSize !== undefined ? Number(data.maxSquadSize) : existing.maxSquadSize,
@@ -301,7 +310,14 @@ export async function updateTeam(req: Request, res: Response) {
       triggerDebouncedSnapshot();
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message || 'Failed to update team.' });
+    console.warn('[UpdateTeam Warning - Falling back to live state]:', error.message);
+    try {
+      const updated = updateLiveTeam(req.params.id, req.body);
+      auctionEngine.invalidateCache();
+      return res.json(updated);
+    } catch (fallbackErr: any) {
+      res.status(500).json({ error: fallbackErr.message || error.message || 'Failed to update team.' });
+    }
   }
 }
 
