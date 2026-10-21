@@ -1,7 +1,14 @@
 import { Request, Response } from 'express';
 import { prisma } from '../prisma';
 import { auctionEngine } from './auction.controller';
-import { triggerDebouncedSnapshot, getFallbackBackupData } from '../utils/persistence';
+import {
+  triggerDebouncedSnapshot,
+  getFallbackBackupData,
+  getLivePlayers,
+  updateLivePlayer,
+  deleteLivePlayer,
+  createLivePlayer,
+} from '../utils/persistence';
 
 // In-memory cache for ultra-fast player list retrieval
 let cachedPlayersData: any[] | null = null;
