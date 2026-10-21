@@ -20,10 +20,10 @@ export function createApp() {
   // Health check with real database connection verification (non-blocking fallback)
   const healthCheck = async (req: express.Request, res: express.Response) => {
     try {
-      // 3-second probe timeout to prevent hanging when DB is warming up
+      // 8-second probe timeout to allow Neon cold-start while preventing request hangs
       await Promise.race([
         prisma.$queryRaw`SELECT 1`,
-        new Promise((_, reject) => setTimeout(() => reject(new Error('DB probe timeout')), 3000)),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('DB probe timeout')), 8000)),
       ]);
       res.json({
         status: 'ok',
