@@ -1,5 +1,8 @@
 FROM node:20-slim
 
+# Force IPv4 precedence over IPv6 to prevent DNS/connection hangs with Neon in Docker/Render
+RUN echo "precedence ::ffff:0:0/96 100" >> /etc/gai.conf
+
 # Install OpenSSL and CA certificates for secure TLS to Neon PostgreSQL
 RUN apt-get update && apt-get install -y openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 
