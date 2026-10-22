@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { Server as SocketIOServer } from 'socket.io';
 import { formatRupees, getMinBidIncrement } from '../utils/currency';
+import { getLiveAuction, updateLiveAuction, getLiveTeams, getLivePlayers } from '../utils/persistence';
 
 export class AuctionEngine {
   private prisma: PrismaClient;
@@ -90,44 +91,94 @@ export class AuctionEngine {
       };
     }
 
-    const [auction, fetchedTeams, fetchedPlayers] = await Promise.all([
-      this.prisma.auction.findFirst({
-        orderBy: { createdAt: 'desc' },
-        include: {
-          bids: {
-            orderBy: { createdAt: 'desc' },
-            take: 20,
-            include: {
-              team: true,
-              player: true,
-            },
-          },
-        },
-      }),
-      this.prisma.team.findMany({
-        include: {
-          squad: {
-            include: {
-              player: true,
-            },
-          },
-        },
-        orderBy: { name: 'asc' },
-      }),
-      this.prisma.player.findMany({
-        include: {
-          teamPlayer: {
-            include: {
-              team: true,
-            },
-          },
-        },
-        orderBy: [{ sNo: 'asc' }, { name: 'asc' }],
-      }),
-    ]);
+    let auction: any = null;
+    let fetchedTeams: any[] = [];
+    let fetchedPlayers: any[] = [];
+    let activePlayer: any = null;
+    let highestBidTeam: any = null;
 
-    if (!auction) return null;
+    try {
+      const [dbAuction, dbTeams, dbPlayers] = await Promise.all([
+        this.prisma.auction.findFirst({
+          orderBy: { createdAt: 'desc' },
+          include: {
+            bids: {
+              orderBy: { createdAt: 'desc' },
+              take: 20,
+              include: {
+                team: true,
+                player: true,
+              },
+            },
+          },
+        }),
+        this.prisma.team.findMany({
+          include: {
+            squad: {
+              include: {
+                player: true,
+              },
+            },
+          },
+          orderBy: { name: 'asc' },
+        }),
+        this.prisma.player.findMany({
+          include: {
+            teamPlayer: {
+              include: {
+                team: true,
+              },
+            },
+          },
+          orderBy: [{ sNo: 'asc' }, { name: 'asc' }],
+        }),
+      ]);
 
+      auction = dbAuction;
+      fetchedTeams = dbTeams;
+      fetchedPlayers = dbPlayers;
+
+      if (auction) {
+        const [dbActivePlayer, dbHighestBidTeam] = await Promise.all([
+          auction.activePlayerId
+            ? this.prisma.player.findUnique({
+                where: { id: auction.activePlayerId },
+                include: {
+                  teamPlayer: {
+                    include: {
+                      team: true,
+                    },
+                  },
+                },
+              })
+            : Promise.resolve(null),
+          auction.highestBidTeamId
+            ? this.prisma.team.findUnique({
+                where: { id: auction.highestBidTeamId },
+              })
+            : Promise.resolve(null),
+        ]);
+        activePlayer = dbActivePlayer;
+        highestBidTeam = dbHighestBidTeam;
+      }
+    } catch (dbErr: any) {
+      console.warn('[AuctionEngine Warning - Serving from durable live state]:', dbErr.message);
+      auction = getLiveAuction();
+      fetchedTeams = getLiveTeams();
+      fetchedPlayers = getLivePlayers();
+      activePlayer = auction.activePlayerId
+        ? fetchedPlayers.find((p: any) => p.id === auction.activePlayerId) || null
+        : null;
+      highestBidTeam = auction.highestBidTeamId
+        ? fetchedTeams.find((t: any) => t.id === auction.highestBidTeamId) || null
+        : null;
+    }
+
+    if (!auction) {
+      auction = getLiveAuction();
+      fetchedTeams = getLiveTeams();
+      fetchedPlayers = getLivePlayers();
+    }
     // Safety guard: Auction cannot be ACTIVE if there is no active player on the block
     if (!auction.activePlayerId && (auction.status === 'ACTIVE' || auction.status === 'PAUSED')) {
       auction.status = 'IDLE';
@@ -143,21 +194,22 @@ export class AuctionEngine {
       this.defaultTimerSec = Number(auction.defaultTimerSec);
     }
 
-    const formattedTeams = fetchedTeams.map((t) => {
-      const overseasCount = t.squad.filter((sp) => sp.player.isOverseas).length;
-      const batters = t.squad.filter((sp) => sp.player.role === 'Batter').length;
-      const bowlers = t.squad.filter((sp) => sp.player.role === 'Bowler').length;
-      const allRounders = t.squad.filter((sp) => sp.player.role === 'All-Rounder').length;
-      const wicketkeepers = t.squad.filter((sp) => sp.player.role === 'Wicketkeeper').length;
-      const spent = t.squad.reduce((sum, sp) => sum + (sp.price || 0), 0);
-      const safeRemaining = t.remainingPurse > t.totalPurse ? Math.max(0, t.totalPurse - spent) : t.remainingPurse;
-      const iconPlayersCount = t.squad.filter((sp) => sp.isIcon || sp.player.isIcon).length;
+    const formattedTeams = fetchedTeams.map((t: any) => {
+      const squad = t.squad || [];
+      const overseasCount = squad.filter((sp: any) => sp.player?.isOverseas).length;
+      const batters = squad.filter((sp: any) => sp.player?.role === 'Batter').length;
+      const bowlers = squad.filter((sp: any) => sp.player?.role === 'Bowler').length;
+      const allRounders = squad.filter((sp: any) => sp.player?.role === 'All-Rounder').length;
+      const wicketkeepers = squad.filter((sp: any) => sp.player?.role === 'Wicketkeeper').length;
+      const spent = squad.reduce((sum: number, sp: any) => sum + (sp.price || 0), 0);
+      const safeRemaining = t.remainingPurse > t.totalPurse ? Math.max(0, t.totalPurse - spent) : (t.remainingPurse !== undefined ? t.remainingPurse : t.totalPurse);
+      const iconPlayersCount = squad.filter((sp: any) => sp.isIcon || sp.player?.isIcon).length;
       const totalSpent = Math.max(0, t.totalPurse - safeRemaining);
 
       return {
         ...t,
         remainingPurse: safeRemaining,
-        squadSize: t.squad.length,
+        squadSize: squad.length,
         iconPlayersCount,
         overseasCount,
         batters,
@@ -170,28 +222,6 @@ export class AuctionEngine {
 
     this.cachedFormattedTeams = formattedTeams;
     this.cachedPlayers = fetchedPlayers;
-
-    // Parallel fetch for active player and highest bid team if present
-    const [activePlayer, highestBidTeam] = await Promise.all([
-      auction.activePlayerId
-        ? this.prisma.player.findUnique({
-            where: { id: auction.activePlayerId },
-            include: {
-              teamPlayer: {
-                include: {
-                  team: true,
-                },
-              },
-            },
-          })
-        : Promise.resolve(null),
-      auction.highestBidTeamId
-        ? this.prisma.team.findUnique({
-            where: { id: auction.highestBidTeamId },
-          })
-        : Promise.resolve(null),
-    ]);
-
     const state = {
       auction: {
         ...auction,

@@ -314,14 +314,17 @@ export function persistLiveState(): void {
     const players = getLivePlayers();
     const teams = getRawLiveTeams();
 
+    const auction = getLiveAuction();
     const data = {
       backupDate: new Date().toISOString(),
       counts: {
         players: players.length,
         teams: teams.length,
+        auctions: 1,
       },
       players,
       teams,
+      auctions: [auction],
     };
 
     fs.writeFileSync(latestFile, JSON.stringify(data, null, 2), 'utf8');
@@ -484,6 +487,59 @@ export function createLiveTeam(createData: any): any {
 /**
  * Safely reads the durable snapshot from latest-backup.json as a high-availability fallback.
  */
+let inMemoryAuction: any = null;
+
+export function getLiveAuction(): any {
+  if (!inMemoryAuction) {
+    const backupDir = path.join(__dirname, '../../backups');
+    const latestFile = path.join(backupDir, 'latest-backup.json');
+    if (fs.existsSync(latestFile)) {
+      try {
+        const raw = fs.readFileSync(latestFile, 'utf8');
+        const data = JSON.parse(raw);
+        if (Array.isArray(data.auctions) && data.auctions.length > 0) {
+          inMemoryAuction = { ...data.auctions[0], bids: data.auctions[0].bids || [] };
+        }
+      } catch (_) {}
+    }
+
+    if (!inMemoryAuction) {
+      inMemoryAuction = {
+        id: 'd7fd259c-befe-408a-a1bc-1b2b1a6888ff',
+        name: 'Premier Cricket Tournament Mega Auction 2026',
+        status: 'ACTIVE',
+        currentRound: 1,
+        defaultTimerSec: 10,
+        autoSell: true,
+        timerEnabled: false,
+        defaultPurse: 15000,
+        defaultSquadLimit: 12,
+        iconPlayerPrice: 2500,
+        defaultBasePrice: 100,
+        activePlayerId: null,
+        activePlayerPrice: 100,
+        highestBidTeamId: null,
+        bids: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+    }
+  }
+
+  return inMemoryAuction;
+}
+
+export function updateLiveAuction(updates: any): any {
+  const current = getLiveAuction();
+  inMemoryAuction = {
+    ...current,
+    ...updates,
+    updatedAt: new Date().toISOString(),
+  };
+  persistLiveState();
+  return inMemoryAuction;
+}
+
 export function getFallbackBackupData(): { players: any[]; teams: any[] } {
   return {
     players: getLivePlayers(),

@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { prisma } from '../prisma';
 import { AuctionEngine } from '../services/auction-engine.service';
 import { AuthenticatedRequest } from '../middleware/auth.middleware';
+import { getLiveAuction, getLiveTeams, getLivePlayers } from '../utils/persistence';
 
 export const auctionEngine = new AuctionEngine(prisma);
 
@@ -13,7 +14,23 @@ export async function getCurrentAuction(req: Request, res: Response) {
     }
     res.json(state);
   } catch (error: any) {
-    res.status(500).json({ error: error.message || 'Failed to fetch auction state.' });
+    console.warn('[GetCurrentAuction Warning - Serving fallback state]:', error.message);
+    const auction = getLiveAuction();
+    const teams = getLiveTeams();
+    const players = getLivePlayers();
+    res.json({
+      auction: {
+        ...auction,
+        secondsLeft: 10,
+      },
+      activePlayer: null,
+      highestBidTeam: null,
+      currentBid: 100,
+      teams,
+      players,
+      recentBids: [],
+      minIncrement: 100,
+    });
   }
 }
 
