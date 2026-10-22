@@ -1,47 +1,83 @@
-# 🏏 Cricket Auction Arena - Backend
+# 🏏 Cricket Auction Arena — Backend API & Real-Time Engine
 
-The real-time auction engine and REST API powering the **Cricket Auction Arena** platform.
+The real-time auction engine, Socket.IO WebSocket server, and REST API powering the **Cricket Auction Arena** platform.
 
-## 🚀 Features
-- **Real-Time Bidding Engine**: Server-controlled 10s countdown timer with Socket.IO broadcasts.
-- **Race-Condition Safeguards**: Mutex locks & atomic Prisma database transactions prevent simultaneous duplicate bids.
-- **Rules & Validation**:
-  - Purse sufficiency checks.
-  - 25-player maximum squad size enforcement.
-  - 8 overseas maximum quota enforcement.
-  - Minimum bid increments per valuation bracket.
-- **Pre-Seeded Data**: 8 fictional teams, 50 detailed cricketers with T20 career statistics, and default demo accounts.
-- **Role-Based Access Control**: Admin, Team Manager, and Spectator roles with JWT authentication.
+⚡ **Live Production URL**: `https://cricketauctionbackend-1.onrender.com`  
+🩺 **Health Probe**: `https://cricketauctionbackend-1.onrender.com/health`
 
-## 🛠️ Tech Stack
-- Node.js + Express + TypeScript
-- Socket.IO
-- Prisma ORM (SQLite zero-config local, PostgreSQL production ready)
-- Zod, bcryptjs, jsonwebtoken
-- Vitest automated test suite
+---
 
-## 🏁 Quickstart
+## 🛠️ Technology Stack
+
+| Category | Technology | Purpose |
+| :--- | :--- | :--- |
+| **Runtime Environment** | [Node.js (v20+)](https://nodejs.org/) | Server execution runtime with modern async I/O |
+| **Web Framework** | [Express.js 4](https://expressjs.com/) | RESTful API endpoints, CORS handling, and middleware pipeline |
+| **Language** | [TypeScript 5](https://www.typescriptlang.org/) | Strongly-typed interfaces for auction domain models and controllers |
+| **Real-Time Engine** | [Socket.IO 4](https://socket.io/) | Full-duplex WebSocket rooms, synchronized 10s countdown ticker, event broadcasts |
+| **Database ORM** | [Prisma ORM 5](https://www.prisma.io/) | Type-safe query builder, schema migrations, and relational modeling |
+| **Driver Adapter** | [@prisma/adapter-pg](https://www.npmjs.com/package/@prisma/adapter-pg) | Direct PostgreSQL driver adapter with connection pooling |
+| **Cloud Database** | [Prisma Postgres](https://www.prisma.io/postgres) | High-performance serverless PostgreSQL with built-in connection pooler |
+| **Connection Pooling** | [Node pg (`pg.Pool`)](https://node-postgres.com/) | Connection lifecycle management, automatic reconnects, and socket timeouts |
+| **Authentication & Security** | [JWT (`jsonwebtoken`)](https://jwt.io/) + [bcryptjs](https://www.npmjs.com/package/bcryptjs) | Stateless token authorization, password hashing, and role-based guards |
+| **High Availability & Durability** | Custom Persistence Engine | Debounced JSON snapshots, automatic empty-DB auto-restoration, in-memory live fallbacks |
+| **Testing** | [Vitest](https://vitest.dev/) + Supertest | Unit testing for purse limits, bid increments, overseas quotas, and multi-client simulation |
+| **Cloud Hosting** | [Render Cloud Platform](https://render.com/) | Containerized web service with automated GitHub Git deployment |
+
+---
+
+## 🚀 Architectural Highlights
+
+1. **Race-Condition Free Bidding**:
+   - Mutex locks and atomic database transactions prevent competing franchises from submitting overlapping bids simultaneously.
+   - Valid bids automatically reset the server timer to 10 seconds.
+2. **Auction Engine & Validation Rules**:
+   - Enforces minimum bid increment brackets (e.g. ₹100, ₹200, ₹500, ₹1000).
+   - Validates franchise purse sufficiency prior to bid acceptance.
+   - Restricts maximum overseas player quota and squad size limits.
+   - Prevents self-bidding when a team already holds the lead bid.
+3. **Resilient High-Availability Persistence**:
+   - Automatic debounced background snapshotting to `latest-backup.json`.
+   - In-memory hot-cache fallback guarantees 0-second downtime even during external cloud maintenance.
+4. **Role-Based Access Control (RBAC)**:
+   - `ADMIN`: Full authority over lots, pausing, resuming, gavel strikes, settings, and player assignments.
+   - `TEAM`: Secure franchise manager credentials with dedicated squad roster and bidding controls.
+   - `SPECTATOR`: Public read-only stream access.
+
+---
+
+## 🏁 Quickstart & Local Setup
+
 ```bash
-# 1. Install dependencies
+# 1. Clone the repository
+git clone https://github.com/Javid8048/cricketAuctionBackend.git
+cd cricketAuctionBackend
+
+# 2. Install dependencies
 npm install
 
-# 2. Push database schema
+# 3. Configure environment variables
+# Copy .env.example to .env and configure DATABASE_URL:
+# DATABASE_URL="postgresql://user:password@localhost:5432/cricket_auction_db?schema=public"
+
+# 4. Push database schema
 npx prisma db push
 
-# 3. Seed database
-npx ts-node prisma/seed.ts
-
-# 4. Build and start
+# 5. Build and launch server
 npm run build
 npm start
 ```
-Server runs at `http://localhost:5000`.
 
-## 🧪 Tests
+The server starts at `http://localhost:5000`.
+
+---
+
+## 🧪 Automated Testing
+
 ```bash
 # Run Vitest test suite
-npx vitest run
+npm run test
 
-# Run multi-client real-time simulation test
+# Run multi-client parallel WebSocket bidding simulation
 node e2e-simulation-test.js
 ```
